@@ -145,11 +145,11 @@ def to_telegram_html(text: str) -> str:
         r"```(\w+)?\n?([\s\S]*?)```", replace_code_block, current_text
     )
 
-    # 3. Extract Block Math ($$...$$ or \[...\]) to <tg-math-block>
+    # 3. Extract Block Math ($$...$$ or \[...\]) to <tg-math>
     def replace_block_math(match):
         content = match.group(1).strip()
         escaped_content = html.escape(content)
-        formatted = f"<tg-math-block>{escaped_content}</tg-math-block>"
+        formatted = f"<tg-math>{escaped_content}</tg-math>"
         return add_placeholder(formatted)
 
     current_text = re.sub(r"\$\$([\s\S]+?)\$\$", replace_block_math, current_text)

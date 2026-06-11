@@ -118,8 +118,12 @@ async def ask_llm(
     temperature = temp_map.get(creativity, 0.4)
 
     # Map max_length to maxOutputTokens
-    tokens_map = {"short": 300, "medium": 800, "long": 2000}
+    tokens_map = {"short": 500, "medium": 1000, "long": 2500}
     max_tokens = tokens_map.get(max_length, 1000)
+
+    # Ensure nutrition mode has enough tokens to avoid truncating tables
+    if mode == "nutrition":
+        max_tokens = max(max_tokens, 1000)
 
     # Construct the appropriate system prompt with language instruction
     system_prompt = SYSTEM_PROMPTS.get(mode, SYSTEM_PROMPTS["general"])

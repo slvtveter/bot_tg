@@ -64,7 +64,7 @@ class TestFormatting(unittest.TestCase):
         # Block math
         self.assertEqual(
             utils.to_telegram_html("$$e = mc^2$$"),
-            "<tg-math-block>e = mc^2</tg-math-block>",
+            "<tg-math>e = mc^2</tg-math>",
         )
 
     def test_unordered_lists(self):
