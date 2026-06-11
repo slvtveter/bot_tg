@@ -8,6 +8,19 @@ services:
     env_file:
       - .env
     environment:
-      - DB_PATH=/app/bot.db
+      - DB_PATH=/data/bot.db
     volumes:
-      - ./bot.db:/app/bot.db
+      - bot_data:/data
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  bot_data:

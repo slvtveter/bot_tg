@@ -1,10 +1,10 @@
 import logging
 from telegram.ext import (
-    ApplicationBuilder, 
-    CommandHandler, 
-    CallbackQueryHandler, 
-    MessageHandler, 
-    filters
+    ApplicationBuilder,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    filters,
 )
 import config
 from database import init_db
@@ -15,15 +15,15 @@ from handlers import (
     mode_callback,
     stats_command,
     message_handler,
-    photo_handler
+    photo_handler,
 )
 
 # Set up logging
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
 
 async def post_init(application) -> None:
     """
@@ -33,6 +33,7 @@ async def post_init(application) -> None:
     await init_db()
     logger.info("Database initialized successfully.")
 
+
 def main():
     # Make sure we have a valid token (already validated in config.py, but safe guard check)
     if not config.TELEGRAM_BOT_TOKEN:
@@ -40,7 +41,12 @@ def main():
         return
 
     # Create the application and set up database initialization
-    app = ApplicationBuilder().token(config.TELEGRAM_BOT_TOKEN).post_init(post_init).build()
+    app = (
+        ApplicationBuilder()
+        .token(config.TELEGRAM_BOT_TOKEN)
+        .post_init(post_init)
+        .build()
+    )
 
     # Register Command Handlers
     app.add_handler(CommandHandler("start", start_command))
@@ -57,6 +63,7 @@ def main():
 
     logger.info("Starting Telegram Bot with modular architecture...")
     app.run_polling()
+
 
 if __name__ == "__main__":
     main()

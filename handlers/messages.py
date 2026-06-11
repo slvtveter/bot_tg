@@ -4,20 +4,28 @@ from database import get_user_mode, log_message, log_usage_stats, get_chat_histo
 from llm import ask_llm
 from utils import to_telegram_markdown
 
+
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Handles incoming text messages, retrieves chat history, queries the LLM, 
+    Handles incoming text messages, retrieves chat history, queries the LLM,
     saves interaction details to the database, and sends formatted HTML/Markdown responses.
     """
     user = update.effective_user
-    if not user or not update.message or not update.message.text:
+    if (
+        not user
+        or not update.message
+        or not update.message.text
+        or not update.effective_chat
+    ):
         return
 
     user_id = user.id
     text = update.message.text
 
     # Show typing status to user
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id, action="typing"
+    )
 
     # 1. Log the user's message first
     await log_message(user_id=user_id, role="user", content=text)
@@ -29,9 +37,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     history = await get_chat_history(user_id=user_id, limit=15)
 
     # 4. Query LLM
-    response_text, model_name, prompt_tokens, completion_tokens, latency = await ask_llm(
-        mode=mode, 
-        history=history
+    response_text, model_name, prompt_tokens, completion_tokens, latency = (
+        await ask_llm(mode=mode, history=history)
     )
 
     if response_text:
@@ -44,7 +51,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             model=model_name or "unknown",
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
-            latency=latency
+            latency=latency,
         )
 
         # 7. Format using utils.py and reply

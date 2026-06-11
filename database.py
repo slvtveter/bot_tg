@@ -2,6 +2,7 @@ import os
 import aiosqlite
 import logging
 from typing import Optional, Dict, Any, List
+from contextlib import asynccontextmanager
 
 # Default database path
 DB_PATH = os.getenv("DB_PATH", "/Users/slvtveter/Desktop/PycharmProjects/bot_tg/bot.db")
@@ -10,16 +11,37 @@ DB_PATH = os.getenv("DB_PATH", "/Users/slvtveter/Desktop/PycharmProjects/bot_tg/
 logger = logging.getLogger(__name__)
 
 
+@asynccontextmanager
+async def get_db_connection(db_path: str = DB_PATH):
+    """
+    Asynchronous context manager that yields a configured database connection.
+    Features:
+    - Busy timeout set to 10 seconds to resolve concurrency/locking issues.
+    - Write-Ahead Logging (WAL) mode enabled for high performance concurrent reads/writes.
+    - Foreign key constraints enabled and enforced.
+    """
+    conn = await aiosqlite.connect(db_path, timeout=10.0)
+    try:
+        await conn.execute("PRAGMA foreign_keys = ON;")
+        await conn.execute("PRAGMA journal_mode = WAL;")
+        yield conn
+    finally:
+        await conn.close()
+
+
 async def init_db(db_path: str = DB_PATH) -> None:
     """
     Initializes the database tables:
     - users: Information about bot users and their active settings.
     - messages: Log of message history for context management.
     - stats: LLM request metrics (tokens, latency, model).
+
+    Enforces foreign key relationships (on delete cascade) and optimizes queries via indexes.
+    If the tables already exist without foreign keys, automatically performs a schema migration.
     """
     try:
-        async with aiosqlite.connect(db_path) as db:
-            # Create users table
+        async with get_db_connection(db_path) as db:
+            # 1. Create users table
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id INTEGER PRIMARY KEY,
@@ -31,31 +53,106 @@ async def init_db(db_path: str = DB_PATH) -> None:
                 )
             """)
 
-            # Create messages table
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER,
-                    role TEXT,
-                    content TEXT,
-                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
+            # 2. Check and migrate messages table to include foreign key constraint
+            async with db.execute("PRAGMA foreign_key_list(messages);") as cursor:
+                messages_fks = await cursor.fetchall()
 
-            # Create stats table
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS stats (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER,
-                    model TEXT,
-                    prompt_tokens INTEGER,
-                    completion_tokens INTEGER,
-                    latency REAL,
-                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
+            if not messages_fks:
+                # Check if messages table exists
+                async with db.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='messages';"
+                ) as cursor:
+                    has_messages = await cursor.fetchone()
+
+                if has_messages:
+                    logger.info(
+                        "Migrating existing messages table to add foreign key..."
+                    )
+                    await db.execute("ALTER TABLE messages RENAME TO messages_old;")
+                    await db.execute("""
+                        CREATE TABLE messages (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            user_id INTEGER,
+                            role TEXT,
+                            content TEXT,
+                            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+                        );
+                    """)
+                    await db.execute("""
+                        INSERT INTO messages (id, user_id, role, content, timestamp)
+                        SELECT id, user_id, role, content, timestamp FROM messages_old;
+                    """)
+                    await db.execute("DROP TABLE messages_old;")
+                else:
+                    await db.execute("""
+                        CREATE TABLE IF NOT EXISTS messages (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            user_id INTEGER,
+                            role TEXT,
+                            content TEXT,
+                            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+                        )
+                    """)
+
+            # 3. Check and migrate stats table to include foreign key constraint
+            async with db.execute("PRAGMA foreign_key_list(stats);") as cursor:
+                stats_fks = await cursor.fetchall()
+
+            if not stats_fks:
+                # Check if stats table exists
+                async with db.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='stats';"
+                ) as cursor:
+                    has_stats = await cursor.fetchone()
+
+                if has_stats:
+                    logger.info("Migrating existing stats table to add foreign key...")
+                    await db.execute("ALTER TABLE stats RENAME TO stats_old;")
+                    await db.execute("""
+                        CREATE TABLE stats (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            user_id INTEGER,
+                            model TEXT,
+                            prompt_tokens INTEGER,
+                            completion_tokens INTEGER,
+                            latency REAL,
+                            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+                        );
+                    """)
+                    await db.execute("""
+                        INSERT INTO stats (id, user_id, model, prompt_tokens, completion_tokens, latency, timestamp)
+                        SELECT id, user_id, model, prompt_tokens, completion_tokens, latency, timestamp FROM stats_old;
+                    """)
+                    await db.execute("DROP TABLE stats_old;")
+                else:
+                    await db.execute("""
+                        CREATE TABLE IF NOT EXISTS stats (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            user_id INTEGER,
+                            model TEXT,
+                            prompt_tokens INTEGER,
+                            completion_tokens INTEGER,
+                            latency REAL,
+                            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+                        )
+                    """)
+
+            # 4. Create Indexes if they do not exist
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_messages_user_id ON messages(user_id);"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_stats_user_id ON stats(user_id);"
+            )
+
             await db.commit()
-            logger.info("Database initialized and tables created successfully.")
+            logger.info(
+                "Database initialized, tables created/migrated, and indexes set up successfully."
+            )
     except Exception as e:
         logger.error(f"Error during database initialization: {e}")
         raise
@@ -66,21 +163,24 @@ async def upsert_user(
     username: Optional[str],
     first_name: Optional[str],
     last_name: Optional[str],
-    db_path: str = DB_PATH
+    db_path: str = DB_PATH,
 ) -> None:
     """
     Inserts a user record or updates existing details (username, first_name, last_name).
     """
     try:
-        async with aiosqlite.connect(db_path) as db:
-            await db.execute("""
+        async with get_db_connection(db_path) as db:
+            await db.execute(
+                """
                 INSERT INTO users (user_id, username, first_name, last_name)
                 VALUES (?, ?, ?, ?)
                 ON CONFLICT(user_id) DO UPDATE SET
                     username = excluded.username,
                     first_name = excluded.first_name,
                     last_name = excluded.last_name
-            """, (user_id, username, first_name, last_name))
+            """,
+                (user_id, username, first_name, last_name),
+            )
             await db.commit()
             logger.info(f"User {user_id} upserted successfully.")
     except Exception as e:
@@ -92,21 +192,18 @@ async def set_user_mode(user_id: int, mode: str, db_path: str = DB_PATH) -> None
     """
     Sets the user's active mode ('general', 'math', 'nutrition').
     If the user doesn't exist, they are created with default/empty fields first.
+    Optimized to use a single atomic UPSERT statement.
     """
     try:
-        async with aiosqlite.connect(db_path) as db:
-            # Attempt to update the mode
-            async with db.execute(
-                "UPDATE users SET current_mode = ? WHERE user_id = ?",
-                (mode, user_id)
-            ) as cursor:
-                # If no row was updated, insert a new user with this mode
-                if cursor.rowcount == 0:
-                    await db.execute("""
-                        INSERT INTO users (user_id, current_mode)
-                        VALUES (?, ?)
-                        ON CONFLICT(user_id) DO UPDATE SET current_mode = excluded.current_mode
-                    """, (user_id, mode))
+        async with get_db_connection(db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO users (user_id, current_mode)
+                VALUES (?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET current_mode = excluded.current_mode
+            """,
+                (user_id, mode),
+            )
             await db.commit()
             logger.info(f"Mode set to '{mode}' for user {user_id}.")
     except Exception as e:
@@ -120,30 +217,36 @@ async def get_user_mode(user_id: int, db_path: str = DB_PATH) -> str:
     Returns 'general' if the user is not found or an error occurs.
     """
     try:
-        async with aiosqlite.connect(db_path) as db:
+        async with get_db_connection(db_path) as db:
             async with db.execute(
-                "SELECT current_mode FROM users WHERE user_id = ?",
-                (user_id,)
+                "SELECT current_mode FROM users WHERE user_id = ?", (user_id,)
             ) as cursor:
                 row = await cursor.fetchone()
                 if row:
                     return row[0]
-                return 'general'
+                return "general"
     except Exception as e:
-        logger.warning(f"Error getting mode for user {user_id}, defaulting to 'general': {e}")
-        return 'general'
+        logger.warning(
+            f"Error getting mode for user {user_id}, defaulting to 'general': {e}"
+        )
+        return "general"
 
 
-async def log_message(user_id: int, role: str, content: str, db_path: str = DB_PATH) -> None:
+async def log_message(
+    user_id: int, role: str, content: str, db_path: str = DB_PATH
+) -> None:
     """
     Saves a chat message (user prompt or bot response) to the database history.
     """
     try:
-        async with aiosqlite.connect(db_path) as db:
-            await db.execute("""
+        async with get_db_connection(db_path) as db:
+            await db.execute(
+                """
                 INSERT INTO messages (user_id, role, content)
                 VALUES (?, ?, ?)
-            """, (user_id, role, content))
+            """,
+                (user_id, role, content),
+            )
             await db.commit()
             logger.info(f"Message logged for user {user_id}.")
     except Exception as e:
@@ -157,17 +260,20 @@ async def log_usage_stats(
     prompt_tokens: int,
     completion_tokens: int,
     latency: float,
-    db_path: str = DB_PATH
+    db_path: str = DB_PATH,
 ) -> None:
     """
     Logs LLM token usage and latency metrics.
     """
     try:
-        async with aiosqlite.connect(db_path) as db:
-            await db.execute("""
+        async with get_db_connection(db_path) as db:
+            await db.execute(
+                """
                 INSERT INTO stats (user_id, model, prompt_tokens, completion_tokens, latency)
                 VALUES (?, ?, ?, ?, ?)
-            """, (user_id, model, prompt_tokens, completion_tokens, latency))
+            """,
+                (user_id, model, prompt_tokens, completion_tokens, latency),
+            )
             await db.commit()
             logger.info(f"Usage stats logged for user {user_id} ({model}).")
     except Exception as e:
@@ -175,11 +281,13 @@ async def log_usage_stats(
         raise
 
 
-async def get_usage_stats(user_id: Optional[int] = None, db_path: str = DB_PATH) -> Dict[str, Any]:
+async def get_usage_stats(
+    user_id: Optional[int] = None, db_path: str = DB_PATH
+) -> Dict[str, Any]:
     """
     Retrieves statistics. If user_id is provided, returns stats for that specific user.
     Otherwise, returns aggregate statistics across all users.
-    
+
     Returns a dictionary of:
     - total_requests: Total number of requests.
     - total_prompt_tokens: Cumulative prompt tokens.
@@ -189,7 +297,7 @@ async def get_usage_stats(user_id: Optional[int] = None, db_path: str = DB_PATH)
     - model_stats: Breakdown by model.
     """
     try:
-        async with aiosqlite.connect(db_path) as db:
+        async with get_db_connection(db_path) as db:
             db.row_factory = aiosqlite.Row
 
             total_query = """
@@ -200,7 +308,7 @@ async def get_usage_stats(user_id: Optional[int] = None, db_path: str = DB_PATH)
                     AVG(latency) as avg_latency
                 FROM stats
             """
-            
+
             model_query = """
                 SELECT 
                     model,
@@ -210,13 +318,13 @@ async def get_usage_stats(user_id: Optional[int] = None, db_path: str = DB_PATH)
                     AVG(latency) as avg_latency
                 FROM stats
             """
-            
+
             params = []
             if user_id is not None:
                 total_query += " WHERE user_id = ?"
                 model_query += " WHERE user_id = ?"
                 params.append(user_id)
-                
+
             model_query += " GROUP BY model"
 
             async with db.execute(total_query, params) as cursor:
@@ -229,7 +337,7 @@ async def get_usage_stats(user_id: Optional[int] = None, db_path: str = DB_PATH)
                     "total_completion_tokens": 0,
                     "total_tokens": 0,
                     "avg_latency": 0.0,
-                    "model_stats": {}
+                    "model_stats": {},
                 }
 
             total_requests = total_row["total_requests"]
@@ -245,8 +353,9 @@ async def get_usage_stats(user_id: Optional[int] = None, db_path: str = DB_PATH)
                         "requests": row["requests"],
                         "prompt_tokens": row["prompt_tokens"] or 0,
                         "completion_tokens": row["completion_tokens"] or 0,
-                        "total_tokens": (row["prompt_tokens"] or 0) + (row["completion_tokens"] or 0),
-                        "avg_latency": row["avg_latency"] or 0.0
+                        "total_tokens": (row["prompt_tokens"] or 0)
+                        + (row["completion_tokens"] or 0),
+                        "avg_latency": row["avg_latency"] or 0.0,
                     }
 
             return {
@@ -255,7 +364,7 @@ async def get_usage_stats(user_id: Optional[int] = None, db_path: str = DB_PATH)
                 "total_completion_tokens": total_completion,
                 "total_tokens": total_prompt + total_completion,
                 "avg_latency": avg_latency,
-                "model_stats": model_stats
+                "model_stats": model_stats,
             }
     except Exception as e:
         logger.error(f"Error retrieving usage stats: {e}")
@@ -265,7 +374,7 @@ async def get_usage_stats(user_id: Optional[int] = None, db_path: str = DB_PATH)
             "total_completion_tokens": 0,
             "total_tokens": 0,
             "avg_latency": 0.0,
-            "model_stats": {}
+            "model_stats": {},
         }
 
 
@@ -274,7 +383,7 @@ async def clear_chat_history(user_id: int, db_path: str = DB_PATH) -> None:
     Deletes all messages for a user from the messages table.
     """
     try:
-        async with aiosqlite.connect(db_path) as db:
+        async with get_db_connection(db_path) as db:
             await db.execute("DELETE FROM messages WHERE user_id = ?", (user_id,))
             await db.commit()
             logger.info(f"Chat history cleared for user {user_id}.")
@@ -283,24 +392,29 @@ async def clear_chat_history(user_id: int, db_path: str = DB_PATH) -> None:
         raise
 
 
-async def get_chat_history(user_id: int, limit: int = 15, db_path: str = DB_PATH) -> List[Dict[str, str]]:
+async def get_chat_history(
+    user_id: int, limit: int = 15, db_path: str = DB_PATH
+) -> List[Dict[str, str]]:
     """
     Queries the last N messages for a user (ordered chronologically)
     formatted as a list of dicts with 'role' and 'content'.
+    Uses the idx_messages_user_id index to optimize retrieval.
     """
     try:
-        async with aiosqlite.connect(db_path) as db:
-            async with db.execute("""
+        async with get_db_connection(db_path) as db:
+            async with db.execute(
+                """
                 SELECT role, content FROM (
                     SELECT id, role, content FROM messages 
                     WHERE user_id = ? 
                     ORDER BY id DESC 
                     LIMIT ?
                 ) ORDER BY id ASC
-            """, (user_id, limit)) as cursor:
+            """,
+                (user_id, limit),
+            ) as cursor:
                 rows = await cursor.fetchall()
                 return [{"role": row[0], "content": row[1]} for row in rows]
     except Exception as e:
         logger.error(f"Error getting chat history for user {user_id}: {e}")
         return []
-

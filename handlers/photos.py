@@ -1,4 +1,5 @@
 import base64
+import html
 import logging
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -8,54 +9,70 @@ from utils import to_telegram_markdown
 
 logger = logging.getLogger(__name__)
 
+
 async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Handles photo messages. Works only in 'nutrition' mode.
-    Downloads the photo, converts to base64, runs LLM Vision, 
+    Handles photo messages. Works in all modes (Nutrition, Math, General) with dynamic vision prompts.
+    Downloads the photo, converts to base64, runs LLM Vision,
     logs interaction and stats in DB, and replies using MarkdownV2.
     """
     user = update.effective_user
-    if not user or not update.message or not update.message.photo:
+    if (
+        not user
+        or not update.message
+        or not update.message.photo
+        or not update.effective_chat
+    ):
         return
 
     user_id = user.id
     mode = await get_user_mode(user_id)
 
-    # 1. Check if the active mode is nutrition
-    if mode != "nutrition":
-        await update.message.reply_html(
-            "📸 Отправка фото поддерживается только в режиме 🍏 <b>Питание</b>.\n"
-            "Переключите режим с помощью команды /mode."
-        )
-        return
-
     # Show typing status to user
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id, action="typing"
+    )
 
     try:
         # Get the highest resolution photo
         photo_file = await update.message.photo[-1].get_file()
         image_bytes = await photo_file.download_as_bytearray()
         image_base64 = base64.b64encode(image_bytes).decode("utf-8")
-        
+
         caption = update.message.caption or ""
-        
-        # Prepare the vision prompt
-        if caption:
-            vision_prompt = f"Определи еду на этом фото и ответь на запрос: {caption}"
-        else:
-            vision_prompt = "Определи еду на этом фото. Опиши кратко: состав, пользу и калорийность блюда."
+
+        # Prepare the vision prompt based on the user's active mode
+        if mode == "nutrition":
+            vision_prompt = (
+                f"Определи еду на этом фото и ответь на запрос: {caption}"
+                if caption
+                else "Определи еду на этом фото. Опиши кратко: состав, пользу и калорийность блюда."
+            )
+        elif mode == "math":
+            vision_prompt = (
+                f"Реши математическую задачу на изображении. Дополнительный запрос: {caption}"
+                if caption
+                else "Реши математическую задачу на этом изображении пошагово."
+            )
+        else:  # general mode
+            vision_prompt = (
+                f"Ответь на запрос касательно этого изображения: {caption}"
+                if caption
+                else "Подробно опиши, что изображено на этой фотографии."
+            )
 
         # 2. Log user action
-        user_log_content = f"[Фото] {caption}".strip()
+        user_log_content = f"[{mode.upper()} PHOTO] {caption}".strip()
         await log_message(user_id=user_id, role="user", content=user_log_content)
 
         # 3. Call LLM with base64 image
-        response_text, model_name, prompt_tokens, completion_tokens, latency = await ask_llm(
-            mode=mode,
-            history=[],  # Vision is usually a single-turn query
-            image_base64=image_base64,
-            vision_prompt=vision_prompt
+        response_text, model_name, prompt_tokens, completion_tokens, latency = (
+            await ask_llm(
+                mode=mode,
+                history=[],  # Vision is usually a single-turn query
+                image_base64=image_base64,
+                vision_prompt=vision_prompt,
+            )
         )
 
         if response_text:
@@ -68,7 +85,7 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 model=model_name or "unknown",
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
-                latency=latency
+                latency=latency,
             )
 
             # 6. Format and reply
@@ -78,9 +95,10 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await update.message.reply_text(
                 "⚠️ Не удалось проанализировать изображение. Попробуйте еще раз позже."
             )
-            
+
     except Exception as e:
         logger.error(f"Error handling photo: {e}")
+        escaped_error = html.escape(str(e))
         await update.message.reply_html(
-            f"❌ Произошла ошибка при обработке фотографии: <code>{e}</code>"
+            f"❌ Произошла ошибка при обработке фотографии: <code>{escaped_error}</code>"
         )
