@@ -4,7 +4,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 from database import get_user_mode, log_message, log_usage_stats
 from llm import ask_llm
-from utils import to_telegram_html
+from utils import to_telegram_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -12,7 +12,7 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     """
     Handles photo messages. Works only in 'nutrition' mode.
     Downloads the photo, converts to base64, runs LLM Vision, 
-    logs interaction and stats in DB, and replies using HTML.
+    logs interaction and stats in DB, and replies using MarkdownV2.
     """
     user = update.effective_user
     if not user or not update.message or not update.message.photo:
@@ -72,10 +72,10 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             )
 
             # 6. Format and reply
-            formatted_response = to_telegram_html(response_text)
-            await update.message.reply_html(formatted_response)
+            formatted_response = to_telegram_markdown(response_text)
+            await update.message.reply_markdown_v2(formatted_response)
         else:
-            await update.message.reply_html(
+            await update.message.reply_text(
                 "⚠️ Не удалось проанализировать изображение. Попробуйте еще раз позже."
             )
             

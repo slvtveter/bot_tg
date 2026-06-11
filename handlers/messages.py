@@ -2,12 +2,12 @@ from telegram import Update
 from telegram.ext import ContextTypes
 from database import get_user_mode, log_message, log_usage_stats, get_chat_history
 from llm import ask_llm
-from utils import to_telegram_html
+from utils import to_telegram_markdown
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Handles incoming text messages, retrieves chat history, queries the LLM, 
-    saves interaction details to the database, and sends formatted HTML responses.
+    saves interaction details to the database, and sends formatted HTML/Markdown responses.
     """
     user = update.effective_user
     if not user or not update.message or not update.message.text:
@@ -48,10 +48,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
 
         # 7. Format using utils.py and reply
-        formatted_response = to_telegram_html(response_text)
-        await update.message.reply_html(formatted_response)
+        formatted_response = to_telegram_markdown(response_text)
+        await update.message.reply_markdown_v2(formatted_response)
     else:
         # All models failed
-        await update.message.reply_html(
+        await update.message.reply_text(
             "⚠️ К сожалению, не удалось получить ответ от ИИ. Пожалуйста, попробуйте позже."
         )
