@@ -41,7 +41,7 @@ async def init_db(db_path: str = DB_PATH) -> None:
     """
     try:
         async with get_db_connection(db_path) as db:
-            # 1. Create users table
+            # 1. Create users table with settings columns
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id INTEGER PRIMARY KEY,
@@ -49,9 +49,33 @@ async def init_db(db_path: str = DB_PATH) -> None:
                     first_name TEXT,
                     last_name TEXT,
                     current_mode TEXT DEFAULT 'general',
+                    max_length TEXT DEFAULT 'medium',
+                    creativity TEXT DEFAULT 'balanced',
+                    language TEXT DEFAULT 'ru',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+
+            # Schema migration: Add settings columns if they don't exist in existing DB
+            async with db.execute("PRAGMA table_info(users);") as cursor:
+                columns_info = await cursor.fetchall()
+
+            existing_columns = {col[1] for col in columns_info}
+            if "max_length" not in existing_columns:
+                logger.info("Migrating users table: adding max_length column")
+                await db.execute(
+                    "ALTER TABLE users ADD COLUMN max_length TEXT DEFAULT 'medium';"
+                )
+            if "creativity" not in existing_columns:
+                logger.info("Migrating users table: adding creativity column")
+                await db.execute(
+                    "ALTER TABLE users ADD COLUMN creativity TEXT DEFAULT 'balanced';"
+                )
+            if "language" not in existing_columns:
+                logger.info("Migrating users table: adding language column")
+                await db.execute(
+                    "ALTER TABLE users ADD COLUMN language TEXT DEFAULT 'ru';"
+                )
 
             # 2. Check and migrate messages table to include foreign key constraint
             async with db.execute("PRAGMA foreign_key_list(messages);") as cursor:
@@ -230,6 +254,59 @@ async def get_user_mode(user_id: int, db_path: str = DB_PATH) -> str:
             f"Error getting mode for user {user_id}, defaulting to 'general': {e}"
         )
         return "general"
+
+
+async def get_user_settings(user_id: int, db_path: str = DB_PATH) -> Dict[str, str]:
+    """
+    Retrieves the settings (max_length, creativity, language) of a user.
+    """
+    default_settings = {
+        "max_length": "medium",
+        "creativity": "balanced",
+        "language": "ru",
+    }
+    try:
+        async with get_db_connection(db_path) as db:
+            async with db.execute(
+                "SELECT max_length, creativity, language FROM users WHERE user_id = ?",
+                (user_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    return {
+                        "max_length": row[0] or "medium",
+                        "creativity": row[1] or "balanced",
+                        "language": row[2] or "ru",
+                    }
+                return default_settings
+    except Exception as e:
+        logger.warning(f"Error getting settings for user {user_id}: {e}")
+        return default_settings
+
+
+async def set_user_setting(
+    user_id: int, setting_name: str, setting_value: str, db_path: str = DB_PATH
+) -> None:
+    """
+    Updates a specific setting (max_length, creativity, or language) of a user.
+    """
+    if setting_name not in ("max_length", "creativity", "language"):
+        raise ValueError(f"Invalid setting name: {setting_name}")
+    try:
+        async with get_db_connection(db_path) as db:
+            query = f"""
+                INSERT INTO users (user_id, {setting_name})
+                VALUES (?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET {setting_name} = excluded.{setting_name}
+            """
+            await db.execute(query, (user_id, setting_value))
+            await db.commit()
+            logger.info(
+                f"Setting '{setting_name}' set to '{setting_value}' for user {user_id}."
+            )
+    except Exception as e:
+        logger.error(f"Error setting '{setting_name}' for user {user_id}: {e}")
+        raise
 
 
 async def log_message(

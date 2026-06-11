@@ -1,5 +1,10 @@
 import html
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+)
 from telegram.ext import ContextTypes
 from database import upsert_user, set_user_mode, clear_chat_history, get_usage_stats
 
@@ -23,18 +28,21 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     escaped_first_name = html.escape(user.first_name or "")
     welcome_text = (
         f"Привет, {escaped_first_name}! 👋\n\n"
-        "Я умный бот-помощник, поддерживающий три режима работы:\n"
-        "🍏 <b>Питание</b> (Nutrition) — отправьте фото еды для анализа состава и калорийности.\n"
-        "🧮 <b>Математика</b> (Math) — подробный разбор формул и концепций с поддержкой LaTeX.\n"
-        "💬 <b>Общий</b> (General) — вежливый ИИ-помощник по любым вопросам.\n\n"
-        "По умолчанию установлен Общий режим.\n\n"
-        "<b>Команды:</b>\n"
-        "/mode — Выбрать режим работы\n"
-        "/clear — Очистить историю сообщений\n"
-        "/stats — Показать статистику использования\n"
-        "/start — Начать заново"
+        "Я ваш персональный суперассистент, поддерживающий три продвинутых режима работы:\n\n"
+        "🍏 <b>Питание</b> — отправляйте фото ваших блюд для мгновенного анализа калорийности и БЖУ.\n"
+        "🧮 <b>Математика</b> — пошаговое обучение, решение задач и native-формулы LaTeX.\n"
+        "💬 <b>Общение</b> — вежливый и структурированный ИИ-помощник по любым вопросам.\n\n"
+        "По умолчанию активен режим 💬 <b>Общение</b>.\n\n"
+        "Используйте кнопки нижнего меню для удобного управления и смены режимов!"
     )
-    await update.message.reply_html(welcome_text)
+
+    reply_keyboard = [
+        ["🍏 Питание", "🧮 Математика", "💬 Общение"],
+        ["⚙️ Настройки", "📊 Статистика", "🧹 Очистить чат"],
+    ]
+    reply_markup = ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True)
+
+    await update.message.reply_html(welcome_text, reply_markup=reply_markup)
 
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -139,3 +147,32 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             )
 
     await update.message.reply_html(response)
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Displays the help message with explanation of modes and commands.
+    """
+    if not update.message:
+        return
+
+    help_text = (
+        "❓ <b>Справка и FAQ по использованию бота:</b>\n\n"
+        "🍏 <b>Режим Питание (Nutrition):</b>\n"
+        "Отправьте фотографию вашего блюда, и ИИ распознает ингредиенты, рассчитает "
+        "примерный вес, калорийность, белки, жиры и углеводы (КБЖУ), оформив их в виде "
+        "красивой таблицы. Можно добавить текстовое описание к фото "
+        "(например, <i>'это на завтрак'</i>).\n\n"
+        "🧮 <b>Режим Математика (Math):</b>\n"
+        "Задавайте любые математические вопросы, формулы, просите объяснить теоремы. "
+        "Бот выведет формулы в нативном формате LaTeX, который красиво отображается "
+        "прямо в приложении Telegram.\n\n"
+        "💬 <b>Режим Общение (General):</b>\n"
+        "Универсальный помощник. Поддерживает контекст предыдущей беседы. "
+        "Подходит для обычного общения, написания кода, переводов текстов и "
+        "любых других вопросов.\n\n"
+        "🛠 <b>Настройки ИИ:</b>\n"
+        "Команда /settings позволяет настроить под вас длину ответов и "
+        "креативность (температуру) ИИ."
+    )
+    await update.message.reply_html(help_text)

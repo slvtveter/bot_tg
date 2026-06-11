@@ -22,3 +22,7 @@ if not GOOGLE_API_KEYS and not OPENROUTER_API_KEY:
         "No LLM API keys configured! Please set GOOGLE_API_KEYS or "
         "OPENROUTER_API_KEY in the environment variables or .env file."
     )
+
+# Parse admin IDs list
+raw_admin_ids = os.getenv("ADMIN_IDS", "")
+ADMIN_IDS = [int(x.strip()) for x in raw_admin_ids.split(",") if x.strip().isdigit()]

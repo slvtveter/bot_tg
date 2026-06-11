@@ -15,52 +15,69 @@ import config
 
 
 class TestFormatting(unittest.TestCase):
-    def test_escape_plain_text(self):
-        text = "Hello! User-Name_Test. 1+1=2."
-        escaped = utils.escape_plain_text(text)
-        # Check that markdown special characters are escaped
-        self.assertIn("\\!", escaped)
-        self.assertIn("\\-", escaped)
-        self.assertIn("\\_", escaped)
-        self.assertIn("\\.", escaped)
-        self.assertIn("\\+", escaped)
-        self.assertIn("\\=", escaped)
+    def test_html_escaping(self):
+        text = "Hello & Welcome! <User> > Test."
+        res = utils.to_telegram_html(text)
+        self.assertEqual(res, "Hello &amp; Welcome! &lt;User&gt; &gt; Test.")
 
-    def test_escape_code(self):
-        code = "print('hello') \\ `backtick`"
-        escaped = utils.escape_code(code)
-        self.assertEqual(escaped, "print('hello') \\\\ \\`backtick\\`")
+    def test_basic_formatting(self):
+        # Test bold
+        self.assertEqual(
+            utils.to_telegram_html("This is **bold**"), "This is <b>bold</b>"
+        )
+        # Test italic
+        self.assertEqual(
+            utils.to_telegram_html("This is *italic*"), "This is <i>italic</i>"
+        )
+        # Test underline
+        self.assertEqual(
+            utils.to_telegram_html("This is __underline__"), "This is <u>underline</u>"
+        )
+        # Test strikethrough
+        self.assertEqual(
+            utils.to_telegram_html("This is ~~strike~~"), "This is <s>strike</s>"
+        )
+        # Test spoiler
+        self.assertEqual(
+            utils.to_telegram_html("This is ||spoiler||"),
+            "This is <tg-spoiler>spoiler</tg-spoiler>",
+        )
 
-    def test_to_telegram_markdown(self):
-        # Test bold escaping
-        text = "This is **bold and cool.!**"
-        res = utils.to_telegram_markdown(text)
-        self.assertEqual(res, "This is *bold and cool\\.\\!*")
+    def test_code_blocks(self):
+        # Inline code
+        self.assertEqual(
+            utils.to_telegram_html("Run `git status`"), "Run <code>git status</code>"
+        )
+        # Fenced code block
+        text = "```python\nprint(123)\n```"
+        self.assertEqual(
+            utils.to_telegram_html(text),
+            '<pre><code class="language-python">print(123)\n</code></pre>',
+        )
 
-        # Test italic escaping
-        text = "This is *italic - text!*"
-        res = utils.to_telegram_markdown(text)
-        self.assertEqual(res, "This is _italic \\- text\\!_")
+    def test_math_blocks(self):
+        # Inline math
+        self.assertEqual(
+            utils.to_telegram_html("Solve $a^2 + b^2 = c^2$"),
+            "Solve <tg-math>a^2 + b^2 = c^2</tg-math>",
+        )
+        # Block math
+        self.assertEqual(
+            utils.to_telegram_html("$$e = mc^2$$"),
+            "<tg-math-block>e = mc^2</tg-math-block>",
+        )
 
-        # Test code block escaping
-        text = "```python\nprint('hello.!')\n```"
-        res = utils.to_telegram_markdown(text)
-        self.assertEqual(res, "```python\nprint('hello.!')\n\n```")
+    def test_unordered_lists(self):
+        text = "* Item 1\n- Item 2\n+ Item 3"
+        self.assertEqual(utils.to_telegram_html(text), "• Item 1\n• Item 2\n• Item 3")
 
-        # Test inline code
-        text = "Run `git status`!"
-        res = utils.to_telegram_markdown(text)
-        self.assertEqual(res, "Run `git status`\\!")
-
-        # Test links
-        text = "[Google Link](https://google.com?q=test_run!)"
-        res = utils.to_telegram_markdown(text)
-        self.assertEqual(res, "[Google Link](https://google.com?q=test_run!)")
-
-        # Test LaTeX inline math conversion
-        text = "Solve $a^2 + b^2 = c^2$ for x."
-        res = utils.to_telegram_markdown(text)
-        self.assertEqual(res, "Solve `a^2 + b^2 = c^2` for x\\.")
+    def test_tables(self):
+        table = "| Header 1 | Header 2 |\n|---|---|\n| Val 1 | Val 2 |"
+        res = utils.to_telegram_html(table)
+        self.assertIn(
+            "<pre>Header 1 | Header 2\n---------+---------\nVal 1    | Val 2   </pre>",
+            res,
+        )
 
 
 class TestDatabaseOperations(unittest.IsolatedAsyncioTestCase):

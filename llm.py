@@ -15,8 +15,9 @@ SYSTEM_PROMPTS = {
     ),
     "math": (
         "Ты — подробный и терпеливый преподаватель математики. Объясняй формулы и математические концепции. "
-        "ОБЯЗАТЕЛЬНО оборачивай абсолютно все математические переменные, символы, буквы и формулы в $...$ для встроенных (inline) формул "
-        "(например, пиши $x$, $f(x)$, $\\nabla f$, а не просто x, f(x), \\nabla f) и в $$...$$ для блочных формул на отдельной строке. "
+        "ОБЯЗАТЕЛЬНО оборачивай абсолютно все математические переменные, символы, буквы и формулы в $...$ "
+        "для встроенных (inline) формул (например, пиши $x$, $f(x)$, $\\nabla f$, а не просто x, f(x), \\nabla f) "
+        "и в $$...$$ для блочных формул на отдельной строке. "
         "Никогда не оставляй LaTeX-символы или переменные без разметки $, иначе они не отобразятся в Telegram. "
         "Никогда не используй LaTeX окружения вроде \\begin{align} или \\begin{matrix}. "
         "Твои объяснения должны быть пошаговыми, понятными и на русском языке."
@@ -94,13 +95,81 @@ async def ask_llm(
     history: List[Dict[str, str]],
     image_base64: Optional[str] = None,
     vision_prompt: Optional[str] = None,
+    user_settings: Optional[Dict[str, str]] = None,
+    is_summarizing: bool = False,
 ) -> Tuple[Optional[str], Optional[str], int, int, float]:
     """
     Queries Gemini API directly with key rotation, falling back to OpenRouter.
+    Applies user settings for creativity, response length, and language.
+    Features automatic chat memory summarization when prompt tokens exceed 6000.
     Returns: (response_text, model_name, prompt_tokens, completion_tokens, latency_seconds)
     """
+    # 1. Extract and map user settings
+    creativity = "balanced"
+    max_length = "medium"
+    language = "ru"
+    if user_settings:
+        creativity = user_settings.get("creativity", "balanced")
+        max_length = user_settings.get("max_length", "medium")
+        language = user_settings.get("language", "ru")
+
+    # Map creativity to temperature
+    temp_map = {"strict": 0.1, "balanced": 0.4, "creative": 0.9}
+    temperature = temp_map.get(creativity, 0.4)
+
+    # Map max_length to maxOutputTokens
+    tokens_map = {"short": 300, "medium": 800, "long": 2000}
+    max_tokens = tokens_map.get(max_length, 1000)
+
+    # Construct the appropriate system prompt with language instruction
     system_prompt = SYSTEM_PROMPTS.get(mode, SYSTEM_PROMPTS["general"])
+    if language == "en":
+        system_prompt += "\nIMPORTANT: You MUST reply in English language only."
+    else:
+        system_prompt += "\nВАЖНО: Вы ДОЛЖНЫ отвечать только на русском языке."
+
     start_time = time.time()
+
+    # 2. Chat history summarization if size is excessive (only for text chat, when not already summarizing)
+    if not image_base64 and not is_summarizing and history:
+        current_tokens = estimate_history_tokens(history, system_prompt)
+        if current_tokens > 6000 and len(history) > 10:
+            logger.info(
+                f"History size {current_tokens} exceeds 6000 tokens. Summarizing oldest 10 messages."
+            )
+            oldest_10 = history[:10]
+            remaining = history[10:]
+
+            # Construct system summarization prompt
+            summary_prompt = (
+                "Сжато и тезисно обобщи следующий диалог между пользователем (user) и ассистентом (assistant), "
+                "сохранив все важные факты, формулы, предпочтения или контекст. Ответь кратко на том же языке:\n\n"
+            )
+            for msg in oldest_10:
+                role_label = (
+                    "Пользователь" if msg.get("role") == "user" else "Ассистент"
+                )
+                summary_prompt += f"{role_label}: {msg.get('content')}\n"
+
+            summary_history = [{"role": "user", "content": summary_prompt}]
+
+            # Query LLM recursively for the summary, passing is_summarizing=True to avoid loops
+            summary_text, _, _, _, _ = await ask_llm(
+                mode="general",
+                history=summary_history,
+                user_settings=user_settings,
+                is_summarizing=True,
+            )
+
+            if summary_text:
+                summary_msg = {
+                    "role": "system",
+                    "content": f"[Предыдущий контекст: {summary_text.strip()}]",
+                }
+                history = [summary_msg] + remaining
+                logger.info(
+                    "Successfully summarized history and prepended to message log."
+                )
 
     # Define models to try
     if image_base64:
@@ -156,8 +225,8 @@ async def ask_llm(
                                     "parts": [{"text": system_prompt}]
                                 },
                                 "generationConfig": {
-                                    "maxOutputTokens": 1000,
-                                    "temperature": 0.3,
+                                    "maxOutputTokens": max_tokens,
+                                    "temperature": temperature,
                                 },
                             }
                         else:
@@ -172,8 +241,8 @@ async def ask_llm(
                                     "parts": [{"text": system_prompt}]
                                 },
                                 "generationConfig": {
-                                    "maxOutputTokens": 1000,
-                                    "temperature": 0.3,
+                                    "maxOutputTokens": max_tokens,
+                                    "temperature": temperature,
                                 },
                             }
 
@@ -278,8 +347,8 @@ async def ask_llm(
                     payload = {
                         "model": model,
                         "messages": messages,
-                        "max_tokens": 1000,
-                        "temperature": 0.3,
+                        "max_tokens": max_tokens,
+                        "temperature": temperature,
                     }
 
                     response = await client.post(url, headers=headers, json=payload)

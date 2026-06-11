@@ -3,7 +3,7 @@ import html
 import logging
 from telegram import Update
 from telegram.ext import ContextTypes
-from database import get_user_mode, log_message, log_usage_stats
+from database import get_user_mode, log_message, log_usage_stats, get_user_settings
 from llm import ask_llm
 from utils import to_telegram_html
 
@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Handles photo messages. Works in all modes (Nutrition, Math, General) with dynamic vision prompts.
-    Downloads the photo, converts to base64, runs LLM Vision, 
+    Downloads the photo, converts to base64, runs LLM Vision,
     logs interaction and stats in DB, and replies using HTML.
     """
     user = update.effective_user
@@ -44,10 +44,17 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         # Prepare the vision prompt based on the user's active mode
         if mode == "nutrition":
             vision_prompt = (
-                f"Определи еду на этом фото и ответь на запрос: {caption}"
-                if caption
-                else "Определи еду на этом фото. Опиши кратко: состав, пользу и калорийность блюда."
+                "Ты — эксперт по питанию. Проанализируй еду на этой фотографии. "
+                "Обязательно составь подробную раскладку по ингредиентам/продуктам и "
+                "выведи её СТРОГО в виде markdown-таблицы с колонками:\n"
+                "| Блюдо / Продукт | Вес (г) | Белки (г) | Жиры (г) | Углеводы (г) | Калории (ккал) |\n"
+                "После таблицы обязательно добавь общую сумму КБЖУ в отдельной строке, "
+                "а затем напиши краткий вывод о пользе блюда и рекомендации."
             )
+            if caption:
+                vision_prompt += (
+                    f"\nУчти дополнительный контекст/запрос от пользователя: {caption}"
+                )
         elif mode == "math":
             vision_prompt = (
                 f"Реши математическую задачу на изображении. Дополнительный запрос: {caption}"
@@ -65,21 +72,25 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         user_log_content = f"[{mode.upper()} PHOTO] {caption}".strip()
         await log_message(user_id=user_id, role="user", content=user_log_content)
 
-        # 3. Call LLM with base64 image
+        # 3. Retrieve settings
+        settings = await get_user_settings(user_id)
+
+        # 4. Call LLM with base64 image and settings
         response_text, model_name, prompt_tokens, completion_tokens, latency = (
             await ask_llm(
                 mode=mode,
                 history=[],  # Vision is usually a single-turn query
                 image_base64=image_base64,
                 vision_prompt=vision_prompt,
+                user_settings=settings,
             )
         )
 
         if response_text:
-            # 4. Log assistant message
+            # 5. Log assistant message
             await log_message(user_id=user_id, role="assistant", content=response_text)
 
-            # 5. Log usage stats
+            # 6. Log usage stats
             await log_usage_stats(
                 user_id=user_id,
                 model=model_name or "unknown",
@@ -88,7 +99,7 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 latency=latency,
             )
 
-            # 6. Format and reply
+            # 7. Format and reply
             formatted_response = to_telegram_html(response_text)
             await update.message.reply_html(formatted_response)
         else:
