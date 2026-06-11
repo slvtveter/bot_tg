@@ -91,6 +91,15 @@ def to_telegram_markdown(text: str) -> str:
 
     # Helper function to parse bold, italic, links, and blockquotes recursively
     def parse_formatting(txt: str) -> str:
+        # Extract Headers (# Header, ## Header, etc.) and convert to Bold
+        def replace_header(match):
+            header_text = parse_formatting(match.group(1))
+            escaped = escape_text_with_placeholders(header_text)
+            formatted = f"*{escaped}*"
+            return add_placeholder(formatted)
+
+        txt = re.sub(r"(?m)^#{1,6}\s*(.+)$", replace_header, txt)
+
         # Extract Blockquotes (> text at start of line)
         def replace_blockquote(match):
             blockquote_text = parse_formatting(match.group(1))
