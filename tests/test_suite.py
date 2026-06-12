@@ -300,7 +300,7 @@ class TestConfig(unittest.TestCase):
                 if key == "TELEGRAM_BOT_TOKEN":
                     return "dummy_token"
                 if key in ("GOOGLE_API_KEYS", "OPENROUTER_API_KEY"):
-                    return default
+                    return default if default is not None else ""
                 return original_env.get(key, default)
             mock_getenv.side_effect = getenv_mock
             with self.assertRaises(ValueError):

@@ -23,7 +23,6 @@ async def get_db_connection(db_path: str = DB_PATH):
     conn = await aiosqlite.connect(db_path, timeout=10.0)
     try:
         await conn.execute("PRAGMA foreign_keys = ON;")
-        await conn.execute("PRAGMA journal_mode = WAL;")
         yield conn
     finally:
         await conn.close()
@@ -41,6 +40,7 @@ async def init_db(db_path: str = DB_PATH) -> None:
     """
     try:
         async with get_db_connection(db_path) as db:
+            await db.execute("PRAGMA journal_mode = WAL;")
             # 1. Create users table with settings columns
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS users (
