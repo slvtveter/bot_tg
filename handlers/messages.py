@@ -9,7 +9,7 @@ from database import (
     get_user_settings,
 )
 from llm import ask_llm
-from utils import to_telegram_html
+from sender import send_response
 
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -93,9 +93,13 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             latency=latency,
         )
 
-        # 7. Format using utils.py and reply
-        formatted_response = to_telegram_html(response_text)
-        await update.message.reply_html(formatted_response)
+        # 7. Send reply using Rich Message API (with fallback)
+        await send_response(
+            bot=context.bot,
+            chat_id=update.effective_chat.id,
+            text=response_text,
+            reply_to_message_id=update.message.message_id,
+        )
     else:
         # All models failed
         await update.message.reply_text(

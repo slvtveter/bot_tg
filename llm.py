@@ -12,20 +12,31 @@ SYSTEM_PROMPTS = {
     "nutrition": (
         "Ты — квалифицированный нутрициолог и эксперт по питанию. "
         "Описывай состав, пользу, вред и калорийность блюд. "
-        "Предоставляй структурированные раскладки КБЖУ (включая подробные таблицы, когда это необходимо) "
-        "и давай полезные рекомендации по питанию."
+        "ОБЯЗАТЕЛЬНО используй правильный Markdown-формат в ответах. "
+        "Для таблиц КБЖУ всегда используй СТРОГИЙ формат markdown-таблиц: "
+        "каждая строка таблицы должна начинаться и заканчиваться символом '|', "
+        "и обязательно должна содержать строку-разделитель '|---|---|' после строки заголовка. "
+        "Пример таблицы:\n"
+        "| Продукт | Калории | Белки | Жиры | Углеводы |\n"
+        "|:---|---|---|---|---|\n"
+        "| Яблоко | 52 | 0.3 | 0.2 | 13.8 |\n\n"
+        "Используй заголовки (## Заголовок), **жирный текст** для ключевых данных, "
+        "маркированные списки (- пункт). Давай полезные рекомендации по питанию."
     ),
     "math": (
         "Ты — подробный и терпеливый преподаватель математики. Объясняй формулы и математические концепции. "
+        "ОБЯЗАТЕЛЬНО используй Markdown-форматирование: заголовки (## Тема), **жирный текст**, списки. "
         "ОБЯЗАТЕЛЬНО оборачивай абсолютно все математические переменные, символы, буквы и формулы в $...$ "
         "для встроенных (inline) формул (например, пиши $x$, $f(x)$, $\\nabla f$, а не просто x, f(x), \\nabla f) "
         "и в $$...$$ для блочных формул на отдельной строке. "
-        "Никогда не оставляй LaTeX-символы или переменные без разметки $, иначе они не отобразятся в Telegram. "
+        "Никогда не оставляй LaTeX-символы или переменные без разметки $, иначе они не отобразятся. "
         "Никогда не используй LaTeX окружения вроде \\begin{align} или \\begin{matrix}. "
         "Твои объяснения должны быть пошаговыми, понятными и на русском языке."
     ),
     "general": (
         "Ты — вежливый, структурированный и полезный ИИ-ассистент. Отвечай четко, по делу и в структурированной форме. "
+        "ОБЯЗАТЕЛЬНО используй Markdown-форматирование: заголовки (## Тема), **жирный текст** для важного, "
+        "маркированные списки (- пункт), `код`, таблицы где уместно (всегда используй правильный markdown-формат с символами '|' по бокам и строкой-разделителем '|---|---|'). "
         "Помогай пользователю во всем, о чем он тебя попросит."
     ),
 }
@@ -115,6 +126,24 @@ async def ask_llm(
         max_length = user_settings.get("max_length", "medium")
         language = user_settings.get("language", "ru")
 
+    # Detect if user explicitly requested a brief response in their latest text message
+    is_explicit_short = False
+    if history:
+        user_msgs = [m for m in history if m.get("role") == "user"]
+        if user_msgs:
+            last_user_text = user_msgs[-1].get("content", "").lower()
+            if any(w in last_user_text for w in ["кратко", "коротко", "сжато", "по-быстрому", "brief", "short", "summarize"]):
+                is_explicit_short = True
+
+    # For vision prompt, check if the user's caption contains briefness keywords
+    if vision_prompt and "пользователя:" in vision_prompt:
+        user_part = vision_prompt.split("пользователя:")[-1].lower()
+        if any(w in user_part for w in ["кратко", "коротко", "сжато", "по-быстрому", "brief", "short", "summarize"]):
+            is_explicit_short = True
+
+    if is_explicit_short:
+        max_length = "short"
+
     # Map creativity to temperature
     temp_map = {"strict": 0.1, "balanced": 0.4, "creative": 0.9}
     temperature = temp_map.get(creativity, 0.4)
@@ -123,8 +152,8 @@ async def ask_llm(
     tokens_map = {"short": 500, "medium": 1000, "long": 2500}
     max_tokens = tokens_map.get(max_length, 1000)
 
-    # Ensure nutrition mode has enough tokens to avoid truncating tables
-    if mode == "nutrition":
+    # Ensure nutrition mode has enough tokens to avoid truncating tables (unless short length is requested)
+    if mode == "nutrition" and max_length != "short":
         max_tokens = max(max_tokens, 1000)
 
     # Construct the appropriate system prompt with language instruction
@@ -133,6 +162,45 @@ async def ask_llm(
         system_prompt += "\nIMPORTANT: You MUST reply in English language only."
     else:
         system_prompt += "\nВАЖНО: Вы ДОЛЖНЫ отвечать только на русском языке."
+
+    # Append length constraint instructions to the system prompt
+    if max_length == "short":
+        if language == "en":
+            system_prompt += (
+                "\nIMPORTANT: Reply as BRIEF, CONCISE and SHORT as possible. "
+                "Avoid long intros, greetings, detailed explanations, general reasoning and conclusions. "
+                "Only output the core answer. "
+                "If analyzing food (nutrition mode), provide only the essentials: "
+                "a very short nutrition table and a brief recommendation in 1-2 sentences."
+            )
+        else:
+            system_prompt += (
+                "\nВАЖНО: Отвечай максимально КРАТКО, КОНЦИЗНЫМ и СЖАТЫМ текстом. "
+                "Избегай длинных вступлений, приветствий, подробных объяснений, общих рассуждений и выводов. "
+                "Только самая суть вопроса. "
+                "Если анализируешь еду (режим питания), предоставь только самое главное: "
+                "очень короткую таблицу КБЖУ и краткий вывод/рекомендацию в 1-2 предложениях."
+            )
+    elif max_length == "long":
+        if language == "en":
+            system_prompt += (
+                "\nIMPORTANT: Provide a very detailed, comprehensive and in-depth answer, "
+                "covering all nuances, reasons, consequences and recommendations."
+            )
+        else:
+            system_prompt += (
+                "\nВАЖНО: Давай максимально подробный, развернутый и глубокий ответ, "
+                "детально описывая все нюансы, причины, последствия и рекомендации."
+            )
+    else:  # medium
+        if language == "en":
+            system_prompt += (
+                "\nIMPORTANT: Answer in a moderate, balanced length."
+            )
+        else:
+            system_prompt += (
+                "\nВАЖНО: Отвечай в умеренном, сбалансированном объеме."
+            )
 
     start_time = time.time()
 

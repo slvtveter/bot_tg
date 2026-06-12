@@ -9,6 +9,73 @@ def strip_markdown(val: str) -> str:
     return re.sub(r"\*\*|\*|~~|`|_", "", val)
 
 
+def normalize_markdown_tables(text: str) -> str:
+    """
+    Finds blocks of consecutive lines containing '|' and converts them into valid markdown tables:
+    1. Ensures each row starts with '|' and ends with '|'.
+    2. Ensures there is a separator row (e.g. '|---|---|') after the header (first row).
+    Only targets blocks of 2 or more consecutive lines containing '|' to avoid matching single-line pipes.
+    """
+    if not text:
+        return ""
+    lines = text.split("\n")
+    new_lines = []
+    
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if '|' in line:
+            table_lines = []
+            while i < len(lines) and '|' in lines[i]:
+                table_lines.append(lines[i])
+                i += 1
+            
+            if len(table_lines) >= 2:
+                normalized_rows = []
+                for row in table_lines:
+                    stripped = row.strip()
+                    if stripped.startswith('|'):
+                        stripped = stripped[1:]
+                    if stripped.endswith('|'):
+                        stripped = stripped[:-1]
+                    
+                    cells = [c.strip() for c in stripped.split('|')]
+                    normalized_row = "| " + " | ".join(cells) + " |"
+                    normalized_rows.append(normalized_row)
+                
+                has_separator = False
+                for r in normalized_rows:
+                    inner = r.strip()
+                    if inner.startswith('|'):
+                        inner = inner[1:]
+                    if inner.endswith('|'):
+                        inner = inner[:-1]
+                    cells = [c.strip() for c in inner.split('|')]
+                    if cells and all(re.match(r"^[\s\-:]+$", c) for c in cells if c):
+                        has_separator = True
+                        break
+                
+                if not has_separator and len(normalized_rows) >= 2:
+                    inner_header = normalized_rows[0].strip()
+                    if inner_header.startswith('|'):
+                        inner_header = inner_header[1:]
+                    if inner_header.endswith('|'):
+                        inner_header = inner_header[:-1]
+                    header_cells = [c.strip() for c in inner_header.split('|')]
+                    num_cols = len(header_cells)
+                    sep_row = "| " + " | ".join(["---"] * num_cols) + " |"
+                    normalized_rows.insert(1, sep_row)
+                
+                new_lines.extend(normalized_rows)
+            else:
+                new_lines.extend(table_lines)
+        else:
+            new_lines.append(line)
+            i += 1
+            
+    return "\n".join(new_lines)
+
+
 def format_markdown_tables(text: str, add_placeholder) -> str:
     """
     Detects markdown tables and formats them into aligned fixed-width text tables
@@ -145,21 +212,21 @@ def to_telegram_html(text: str) -> str:
         r"```(\w+)?\n?([\s\S]*?)```", replace_code_block, current_text
     )
 
-    # 3. Extract Block Math ($$...$$ or \[...\]) to <tg-math>
+    # 3. Extract Block Math ($$...$$ or \[...\]) to <pre><code class="language-math">...</code></pre>
     def replace_block_math(match):
         content = match.group(1).strip()
         escaped_content = html.escape(content)
-        formatted = f"<tg-math>{escaped_content}</tg-math>"
+        formatted = f'<pre><code class="language-math">{escaped_content}</code></pre>'
         return add_placeholder(formatted)
 
     current_text = re.sub(r"\$\$([\s\S]+?)\$\$", replace_block_math, current_text)
     current_text = re.sub(r"\\\[([\s\S]+?)\\\]", replace_block_math, current_text)
 
-    # 4. Extract Inline Math ($math$ or \(math\)) to <tg-math>
+    # 4. Extract Inline Math ($math$ or \(math\)) to <code>...</code>
     def replace_inline_math(match):
         content = match.group(1).strip()
         escaped_content = html.escape(content)
-        formatted = f"<tg-math>{escaped_content}</tg-math>"
+        formatted = f"<code>{escaped_content}</code>"
         return add_placeholder(formatted)
 
     current_text = re.sub(
@@ -226,9 +293,6 @@ def to_telegram_html(text: str) -> str:
             formatted = f"<b>{bold_text}</b>"
             return add_placeholder(formatted)
 
-        txt = re.sub(
-            r"\*\frac{a}{b}\*(?!\s)([\s\S]+?)(?<!\s)\*\frac{a}{b}\*", replace_bold, txt
-        )  # wait, simple fix for copy paste typo, let's keep standard bold regex below
         txt = re.sub(r"\*\*(?!\s)([\s\S]+?)(?<!\s)\*\*", replace_bold, txt)
 
         # Italic (*italic* or _italic_)

@@ -59,12 +59,12 @@ class TestFormatting(unittest.TestCase):
         # Inline math
         self.assertEqual(
             utils.to_telegram_html("Solve $a^2 + b^2 = c^2$"),
-            "Solve <tg-math>a^2 + b^2 = c^2</tg-math>",
+            "Solve <code>a^2 + b^2 = c^2</code>",
         )
         # Block math
         self.assertEqual(
             utils.to_telegram_html("$$e = mc^2$$"),
-            "<tg-math>e = mc^2</tg-math>",
+            '<pre><code class="language-math">e = mc^2</code></pre>',
         )
 
     def test_unordered_lists(self):
@@ -78,6 +78,37 @@ class TestFormatting(unittest.TestCase):
             "<pre>Header 1 | Header 2\n---------+---------\nVal 1    | Val 2   </pre>",
             res,
         )
+
+    def test_table_normalization(self):
+        table_raw = (
+            "Показатель | Значение\n"
+            "Белки | 0.3 г\n"
+            "Жиры | 0.2 г"
+        )
+        normalized = utils.normalize_markdown_tables(table_raw)
+        expected = (
+            "| Показатель | Значение |\n"
+            "| --- | --- |\n"
+            "| Белки | 0.3 г |\n"
+            "| Жиры | 0.2 г |"
+        )
+        self.assertEqual(normalized, expected)
+
+        table_ok = (
+            "| Col1 | Col2 |\n"
+            "|---|---|\n"
+            "| Val1 | Val2 |"
+        )
+        normalized_ok = utils.normalize_markdown_tables(table_ok)
+        expected_ok = (
+            "| Col1 | Col2 |\n"
+            "| --- | --- |\n"
+            "| Val1 | Val2 |"
+        )
+        self.assertEqual(normalized_ok, expected_ok)
+
+        single_pipe = "Option A | Option B"
+        self.assertEqual(utils.normalize_markdown_tables(single_pipe), single_pipe)
 
 
 class TestDatabaseOperations(unittest.IsolatedAsyncioTestCase):

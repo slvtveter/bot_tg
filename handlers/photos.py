@@ -5,7 +5,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 from database import get_user_mode, log_message, log_usage_stats, get_user_settings
 from llm import ask_llm
-from utils import to_telegram_html
+from sender import send_response
 
 logger = logging.getLogger(__name__)
 
@@ -45,11 +45,18 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         if mode == "nutrition":
             vision_prompt = (
                 "Ты — эксперт по питанию. Проанализируй еду на этой фотографии. "
-                "Обязательно составь подробную раскладку по ингредиентам/продуктам и "
-                "выведи её СТРОГО в виде markdown-таблицы с колонками:\n"
-                "| Блюдо / Продукт | Вес (г) | Белки (г) | Жиры (г) | Углеводы (г) | Калории (ккал) |\n"
-                "После таблицы обязательно добавь общую сумму КБЖУ в отдельной строке, "
-                "а затем напиши краткий вывод о пользе блюда и рекомендации."
+                "Обязательно составь подробную раскладку по ингредиентам/продуктам. "
+                "Используй СТРОГО правильный Markdown-формат. Пример правильной таблицы:\n\n"
+                "## 📊 Таблица КБЖУ\n\n"
+                "| Продукт | Вес (г) | Белки (г) | Жиры (г) | Углеводы (г) | Калории (ккал) |\n"
+                "|:--------|--------:|----------:|---------:|-------------:|---------------:|\n"
+                "| Яблоко  | 180     | 0.5       | 0.4      | 24.8         | 94             |\n\n"
+                "ВАЖНО: Таблица ОБЯЗАТЕЛЬНО должна иметь строку-разделитель |---|---| после заголовка!\n"
+                "После таблицы добавь:\n"
+                "## 📋 Итого\n"
+                "Общую сумму КБЖУ **жирным текстом**.\n"
+                "## 💡 Рекомендации\n"
+                "Краткий вывод о пользе и рекомендации."
             )
             if caption:
                 vision_prompt += (
@@ -99,9 +106,13 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 latency=latency,
             )
 
-            # 7. Format and reply
-            formatted_response = to_telegram_html(response_text)
-            await update.message.reply_html(formatted_response)
+            # 7. Send reply using Rich Message API (with fallback)
+            await send_response(
+                bot=context.bot,
+                chat_id=update.effective_chat.id,
+                text=response_text,
+                reply_to_message_id=update.message.message_id,
+            )
         else:
             await update.message.reply_text(
                 "⚠️ Не удалось проанализировать изображение. Попробуйте еще раз позже."
