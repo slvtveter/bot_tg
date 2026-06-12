@@ -149,12 +149,12 @@ async def ask_llm(
     temperature = temp_map.get(creativity, 0.4)
 
     # Map max_length to maxOutputTokens
-    tokens_map = {"short": 500, "medium": 1000, "long": 2500}
-    max_tokens = tokens_map.get(max_length, 1000)
+    tokens_map = {"short": 600, "medium": 1500, "long": 3000}
+    max_tokens = tokens_map.get(max_length, 1500)
 
     # Ensure nutrition mode has enough tokens to avoid truncating tables (unless short length is requested)
     if mode == "nutrition" and max_length != "short":
-        max_tokens = max(max_tokens, 1000)
+        max_tokens = max(max_tokens, 1500)
 
     # Construct the appropriate system prompt with language instruction
     system_prompt = SYSTEM_PROMPTS.get(mode, SYSTEM_PROMPTS["general"])
@@ -320,12 +320,34 @@ async def ask_llm(
                                 },
                             }
 
+                        # Log payload details for debugging (hiding base64 data)
+                        payload_log = payload.copy()
+                        if image_base64 and "contents" in payload_log:
+                            payload_log["contents"] = [
+                                {
+                                    "parts": [
+                                        p if "inlineData" not in p else {"inlineData": {"mimeType": p["inlineData"]["mimeType"], "data": "<base64_hidden>"}}
+                                        for p in payload_log["contents"][0]["parts"]
+                                    ]
+                                }
+                            ]
+                        logger.info(f"Gemini API request payload: {payload_log}")
+
                         response = await client.post(url, json=payload)
 
                         if response.status_code == 200:
                             data = response.json()
                             candidates = data.get("candidates", [])
                             if candidates:
+                                # Validate finish reason (check for safety/other blocks)
+                                finish_reason = candidates[0].get("finishReason")
+                                if finish_reason and finish_reason not in ("STOP", "MAX_TOKENS"):
+                                    logger.warning(
+                                        f"Direct Gemini ({model}) candidate finishReason is '{finish_reason}', "
+                                        "treating as failure to trigger fallback."
+                                    )
+                                    continue
+
                                 parts = (
                                     candidates[0].get("content", {}).get("parts", [])
                                 )
