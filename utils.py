@@ -1,5 +1,5 @@
-import re
 import html
+import re
 
 
 def strip_markdown(val: str) -> str:
@@ -18,62 +18,93 @@ def normalize_markdown_tables(text: str) -> str:
     """
     if not text:
         return ""
-    lines = text.split("\n")
+
+    placeholders = []
+
+    def add_placeholder(val: str) -> str:
+        idx = len(placeholders)
+        placeholders.append(val)
+        return f"TABLEPLACEHOLDER{idx}TEMPTABLE"
+
+    # Protect code blocks and math expressions first so they don't get corrupted
+    def replace_block(match):
+        return add_placeholder(match.group(0))
+
+    # Protect Fenced Code Blocks
+    current_text = re.sub(r"```(\w+)?\n?([\s\S]*?)```", replace_block, text)
+
+    # Protect Block Math
+    current_text = re.sub(r"\$\$([\s\S]+?)\$\$", replace_block, current_text)
+    current_text = re.sub(r"\\\[([\s\S]+?)\\\]", replace_block, current_text)
+
+    # Protect Inline Math
+    current_text = re.sub(r"\$(?!\s)([^\$]+?)(?<!\s)\$", replace_block, current_text)
+    current_text = re.sub(r"\\\(([\s\S]+?)\\\)", replace_block, current_text)
+
+    # Protect Inline Code
+    current_text = re.sub(r"`([^`]+?)`", replace_block, current_text)
+
+    lines = current_text.split("\n")
     new_lines = []
-    
+
     i = 0
     while i < len(lines):
         line = lines[i]
-        if '|' in line:
+        if "|" in line:
             table_lines = []
-            while i < len(lines) and '|' in lines[i]:
+            while i < len(lines) and "|" in lines[i]:
                 table_lines.append(lines[i])
                 i += 1
-            
+
             if len(table_lines) >= 2:
                 normalized_rows = []
                 for row in table_lines:
                     stripped = row.strip()
-                    if stripped.startswith('|'):
+                    if stripped.startswith("|"):
                         stripped = stripped[1:]
-                    if stripped.endswith('|'):
+                    if stripped.endswith("|"):
                         stripped = stripped[:-1]
-                    
-                    cells = [c.strip() for c in stripped.split('|')]
+
+                    cells = [c.strip() for c in stripped.split("|")]
                     normalized_row = "| " + " | ".join(cells) + " |"
                     normalized_rows.append(normalized_row)
-                
+
                 has_separator = False
                 for r in normalized_rows:
                     inner = r.strip()
-                    if inner.startswith('|'):
+                    if inner.startswith("|"):
                         inner = inner[1:]
-                    if inner.endswith('|'):
+                    if inner.endswith("|"):
                         inner = inner[:-1]
-                    cells = [c.strip() for c in inner.split('|')]
+                    cells = [c.strip() for c in inner.split("|")]
                     if cells and all(re.match(r"^[\s\-:]+$", c) for c in cells if c):
                         has_separator = True
                         break
-                
+
                 if not has_separator and len(normalized_rows) >= 2:
                     inner_header = normalized_rows[0].strip()
-                    if inner_header.startswith('|'):
+                    if inner_header.startswith("|"):
                         inner_header = inner_header[1:]
-                    if inner_header.endswith('|'):
+                    if inner_header.endswith("|"):
                         inner_header = inner_header[:-1]
-                    header_cells = [c.strip() for c in inner_header.split('|')]
+                    header_cells = [c.strip() for c in inner_header.split("|")]
                     num_cols = len(header_cells)
                     sep_row = "| " + " | ".join(["---"] * num_cols) + " |"
                     normalized_rows.insert(1, sep_row)
-                
+
                 new_lines.extend(normalized_rows)
             else:
                 new_lines.extend(table_lines)
         else:
             new_lines.append(line)
             i += 1
-            
-    return "\n".join(new_lines)
+
+    restored_text = "\n".join(new_lines)
+    for idx in reversed(range(len(placeholders))):
+        restored_text = restored_text.replace(
+            f"TABLEPLACEHOLDER{idx}TEMPTABLE", placeholders[idx]
+        )
+    return restored_text
 
 
 def format_markdown_tables(text: str, add_placeholder) -> str:
@@ -243,6 +274,14 @@ def to_telegram_html(text: str) -> str:
 
     current_text = re.sub(r"`([^`]+?)`", replace_inline_code, current_text)
 
+    # Escape all remaining plain text (including markdown syntax characters) before formatting
+    # This prevents user-supplied HTML entities in plain text and formatted text from breaking the layout.
+    tokens = re.split(r"(HTMLPLACEHOLDER\d+TEMPHTML)", current_text)
+    for i in range(len(tokens)):
+        if not tokens[i].startswith("HTMLPLACEHOLDER"):
+            tokens[i] = html.escape(tokens[i])
+    current_text = "".join(tokens)
+
     # Helper function to parse bold, italic, links, headers, lists and blockquotes recursively
     def parse_formatting(txt: str) -> str:
         # Extract Headers (# Header, ## Header, etc.) and convert to Bold
@@ -259,7 +298,7 @@ def to_telegram_html(text: str) -> str:
             formatted = f"<blockquote>{blockquote_text}</blockquote>"
             return add_placeholder(formatted)
 
-        txt = re.sub(r"(?m)^>\s*(.+)$", replace_blockquote, txt)
+        txt = re.sub(r"(?m)^&gt;\s*(.+)$", replace_blockquote, txt)
 
         # Unordered Lists
         def replace_list_item(match):
@@ -273,11 +312,21 @@ def to_telegram_html(text: str) -> str:
         def replace_link(match):
             link_text = parse_formatting(match.group(1))
             url = match.group(2)
-            escaped_url = html.escape(url)
+            # Use unescape then escape to prevent double escaping of URL params
+            escaped_url = html.escape(html.unescape(url))
             formatted = f'<a href="{escaped_url}">{link_text}</a>'
             return add_placeholder(formatted)
 
-        txt = re.sub(r"\[([^\]]+?)\]\(([^\)]+?)\)", replace_link, txt)
+        txt = re.sub(r"\[([^\]]+?)\]\(((?:[^()]+|\([^()]*\))+)\)", replace_link, txt)
+
+        # Bold & Italic (***bold italic*** or ___bold italic___)
+        def replace_bold_italic(match):
+            bold_italic_text = parse_formatting(match.group(1))
+            formatted = f"<b><i>{bold_italic_text}</i></b>"
+            return add_placeholder(formatted)
+
+        txt = re.sub(r"\*\*\*(?!\s)([\s\S]+?)(?<!\s)\*\*\*", replace_bold_italic, txt)
+        txt = re.sub(r"___(?!\s)([\s\S]+?)(?<!\s)___", replace_bold_italic, txt)
 
         # Underlines (__underline__)
         def replace_underline(match):
@@ -325,18 +374,10 @@ def to_telegram_html(text: str) -> str:
     # Apply formatting parser
     current_text = parse_formatting(current_text)
 
-    # 6. Escape all remaining plain text
-    tokens = re.split(r"(HTMLPLACEHOLDER\d+TEMPHTML)", current_text)
-    for i in range(len(tokens)):
-        if not tokens[i].startswith("HTMLPLACEHOLDER"):
-            tokens[i] = html.escape(tokens[i])
-
-    escaped_text = "".join(tokens)
-
-    # 7. Restore placeholders in reverse order
+    # Restore placeholders in reverse order
     for i in reversed(range(len(placeholders))):
-        escaped_text = escaped_text.replace(
+        current_text = current_text.replace(
             f"HTMLPLACEHOLDER{i}TEMPHTML", placeholders[i]
         )
 
-    return escaped_text
+    return current_text

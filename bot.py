@@ -1,28 +1,30 @@
 import logging
+
 from telegram.ext import (
     ApplicationBuilder,
-    CommandHandler,
     CallbackQueryHandler,
-    MessageHandler,
+    CommandHandler,
     InlineQueryHandler,
+    MessageHandler,
     filters,
 )
+
 import config
 from database import init_db
 from handlers import (
-    start_command,
-    clear_command,
-    mode_command,
-    mode_callback,
-    stats_command,
-    help_command,
-    message_handler,
-    photo_handler,
-    settings_command,
-    settings_callback,
-    inline_query_handler,
-    admin_command,
     admin_callback,
+    admin_command,
+    clear_command,
+    help_command,
+    inline_query_handler,
+    message_handler,
+    mode_callback,
+    mode_command,
+    photo_handler,
+    settings_callback,
+    settings_command,
+    start_command,
+    stats_command,
 )
 
 # Set up logging

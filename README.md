@@ -59,6 +59,9 @@ Stores user profile information and their selected operating mode.
 | `first_name` | `TEXT` | | User's first name |
 | `last_name` | `TEXT` | | User's last name |
 | `current_mode` | `TEXT` | `DEFAULT 'general'` | Active bot mode (`general`, `math`, `nutrition`) |
+| `max_length` | `TEXT` | `DEFAULT 'medium'` | Response length setting (`short`, `medium`, `long`) |
+| `creativity` | `TEXT` | `DEFAULT 'balanced'` | Temperature setting (`precise`, `balanced`, `creative`) |
+| `language` | `TEXT` | `DEFAULT 'ru'` | System language (`ru`, `en`) |
 | `created_at` | `TIMESTAMP` | `DEFAULT CURRENT_TIMESTAMP` | Time of first bot interaction |
 
 #### 2. `messages`
@@ -192,6 +195,9 @@ graph TD
 | `first_name` | `TEXT` | | Имя |
 | `last_name` | `TEXT` | | Фамилия |
 | `current_mode` | `TEXT` | `DEFAULT 'general'` | Текущий режим работы (`general`, `math`, `nutrition`) |
+| `max_length` | `TEXT` | `DEFAULT 'medium'` | Настройка длины ответа (`short`, `medium`, `long`) |
+| `creativity` | `TEXT` | `DEFAULT 'balanced'` | Настройка креативности (`precise`, `balanced`, `creative`) |
+| `language` | `TEXT` | `DEFAULT 'ru'` | Язык системы (`ru`, `en`) |
 | `created_at` | `TIMESTAMP` | `DEFAULT CURRENT_TIMESTAMP` | Время регистрации пользователя |
 
 #### 2. `messages`

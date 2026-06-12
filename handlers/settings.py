@@ -1,5 +1,6 @@
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
+
 from database import get_user_settings, set_user_setting
 
 # Translation maps for display

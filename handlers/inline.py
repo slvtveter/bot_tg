@@ -1,7 +1,9 @@
 import logging
 import uuid
-from telegram import Update, InlineQueryResultArticle, InputTextMessageContent
+
+from telegram import InlineQueryResultArticle, InputTextMessageContent, Update
 from telegram.ext import ContextTypes
+
 from llm import ask_llm
 from utils import to_telegram_html
 

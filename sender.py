@@ -8,9 +8,11 @@ Falls back to plain text if HTML also fails.
 """
 
 import logging
+
 import httpx
-from telegram import Bot, Message, Update
-from utils import to_telegram_html, normalize_markdown_tables
+from telegram import Bot, Message
+
+from utils import normalize_markdown_tables, to_telegram_html
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +130,5 @@ async def _send_rich_message(
 
     # Log failure details
     error_text = response.text[:300] if response.text else "empty response"
-    logger.warning(
-        f"sendRichMessage returned {response.status_code}: {error_text}"
-    )
+    logger.warning(f"sendRichMessage returned {response.status_code}: {error_text}")
     return None

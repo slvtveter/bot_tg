@@ -48,6 +48,9 @@ erDiagram
         TEXT first_name
         TEXT last_name
         TEXT current_mode
+        TEXT max_length
+        TEXT creativity
+        TEXT language
         TIMESTAMP created_at
     }
     
@@ -79,6 +82,9 @@ Stores registered bot users and their configurations.
 *   `first_name` (TEXT): First name.
 *   `last_name` (TEXT): Last name.
 *   `current_mode` (TEXT): Active mode (`general`, `math`, `nutrition`). Defaults to `general`.
+*   `max_length` (TEXT): Response length setting (`short`, `medium`, `long`). Defaults to `medium`.
+*   `creativity` (TEXT): Temperature setting (`precise`, `balanced`, `creative`). Defaults to `balanced`.
+*   `language` (TEXT): System language (`ru`, `en`). Defaults to `ru`.
 *   `created_at` (TIMESTAMP): Date registered.
 
 #### 2. `messages` Table

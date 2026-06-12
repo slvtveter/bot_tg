@@ -1,9 +1,11 @@
+import logging
+import random
 import re
 import time
-import random
-import logging
-from typing import List, Dict, Any, Tuple, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
 import httpx
+
 import config
 
 logger = logging.getLogger(__name__)
@@ -36,7 +38,8 @@ SYSTEM_PROMPTS = {
     "general": (
         "Ты — вежливый, структурированный и полезный ИИ-ассистент. Отвечай четко, по делу и в структурированной форме. "
         "ОБЯЗАТЕЛЬНО используй Markdown-форматирование: заголовки (## Тема), **жирный текст** для важного, "
-        "маркированные списки (- пункт), `код`, таблицы где уместно (всегда используй правильный markdown-формат с символами '|' по бокам и строкой-разделителем '|---|---|'). "
+        "маркированные списки (- пункт), `код`, таблицы где уместно (всегда используй правильный "
+        "markdown-формат с символами '|' по бокам и строкой-разделителем '|---|---|'). "
         "Помогай пользователю во всем, о чем он тебя попросит."
     ),
 }
@@ -132,13 +135,35 @@ async def ask_llm(
         user_msgs = [m for m in history if m.get("role") == "user"]
         if user_msgs:
             last_user_text = user_msgs[-1].get("content", "").lower()
-            if any(w in last_user_text for w in ["кратко", "коротко", "сжато", "по-быстрому", "brief", "short", "summarize"]):
+            if any(
+                w in last_user_text
+                for w in [
+                    "кратко",
+                    "коротко",
+                    "сжато",
+                    "по-быстрому",
+                    "brief",
+                    "short",
+                    "summarize",
+                ]
+            ):
                 is_explicit_short = True
 
     # For vision prompt, check if the user's caption contains briefness keywords
     if vision_prompt and "пользователя:" in vision_prompt:
         user_part = vision_prompt.split("пользователя:")[-1].lower()
-        if any(w in user_part for w in ["кратко", "коротко", "сжато", "по-быстрому", "brief", "short", "summarize"]):
+        if any(
+            w in user_part
+            for w in [
+                "кратко",
+                "коротко",
+                "сжато",
+                "по-быстрому",
+                "brief",
+                "short",
+                "summarize",
+            ]
+        ):
             is_explicit_short = True
 
     if is_explicit_short:
@@ -194,13 +219,9 @@ async def ask_llm(
             )
     else:  # medium
         if language == "en":
-            system_prompt += (
-                "\nIMPORTANT: Answer in a moderate, balanced length."
-            )
+            system_prompt += "\nIMPORTANT: Answer in a moderate, balanced length."
         else:
-            system_prompt += (
-                "\nВАЖНО: Отвечай в умеренном, сбалансированном объеме."
-            )
+            system_prompt += "\nВАЖНО: Отвечай в умеренном, сбалансированном объеме."
 
     start_time = time.time()
 
@@ -262,10 +283,12 @@ async def ask_llm(
         ]
 
     # --- 1. Direct Gemini API calling with key rotation ---
-    active_keys = key_pool.get_active_keys()
-    if active_keys:
+    if key_pool.get_active_keys():
         async with httpx.AsyncClient(timeout=30.0) as client:
             for model in direct_models:
+                active_keys = key_pool.get_active_keys()
+                if not active_keys:
+                    continue
                 shuffled_keys = active_keys.copy()
                 random.shuffle(shuffled_keys)
 
@@ -326,7 +349,18 @@ async def ask_llm(
                             payload_log["contents"] = [
                                 {
                                     "parts": [
-                                        p if "inlineData" not in p else {"inlineData": {"mimeType": p["inlineData"]["mimeType"], "data": "<base64_hidden>"}}
+                                        (
+                                            p
+                                            if "inlineData" not in p
+                                            else {
+                                                "inlineData": {
+                                                    "mimeType": p["inlineData"][
+                                                        "mimeType"
+                                                    ],
+                                                    "data": "<base64_hidden>",
+                                                }
+                                            }
+                                        )
                                         for p in payload_log["contents"][0]["parts"]
                                     ]
                                 }
@@ -341,7 +375,10 @@ async def ask_llm(
                             if candidates:
                                 # Validate finish reason (check for safety/other blocks)
                                 finish_reason = candidates[0].get("finishReason")
-                                if finish_reason and finish_reason not in ("STOP", "MAX_TOKENS"):
+                                if finish_reason and finish_reason not in (
+                                    "STOP",
+                                    "MAX_TOKENS",
+                                ):
                                     logger.warning(
                                         f"Direct Gemini ({model}) candidate finishReason is '{finish_reason}', "
                                         "treating as failure to trigger fallback."
@@ -363,10 +400,7 @@ async def ask_llm(
                                     )
 
                                     # Estimate if missing
-                                    if (
-                                        prompt_tokens is None
-                                        or completion_tokens is None
-                                    ):
+                                    if prompt_tokens is None:
                                         prompt_tokens = (
                                             estimate_history_tokens(
                                                 history, system_prompt
@@ -374,6 +408,7 @@ async def ask_llm(
                                             if not image_base64
                                             else estimate_tokens(prompt_text)
                                         )
+                                    if completion_tokens is None:
                                         completion_tokens = estimate_tokens(
                                             text_response
                                         )
@@ -392,7 +427,9 @@ async def ask_llm(
                         logger.warning(
                             f"Direct Gemini ({model}) returned status {response.status_code}: {response.text[:200]}"
                         )
-                        if response.status_code in (429, 403, 500, 503):
+                        if response.status_code in (429, 403, 500, 503) or (
+                            response.status_code == 400 and "API key not valid" in response.text
+                        ):
                             logger.warning(
                                 f"Putting key {key[:8]} on cooldown due to status {response.status_code}"
                             )
@@ -462,12 +499,13 @@ async def ask_llm(
                             completion_tokens = usage.get("completion_tokens")
 
                             # Estimate if missing
-                            if prompt_tokens is None or completion_tokens is None:
+                            if prompt_tokens is None:
                                 prompt_tokens = (
                                     estimate_history_tokens(history, system_prompt)
                                     if not image_base64
                                     else estimate_tokens(prompt_text)
                                 )
+                            if completion_tokens is None:
                                 completion_tokens = estimate_tokens(text_response)
 
                             logger.info(

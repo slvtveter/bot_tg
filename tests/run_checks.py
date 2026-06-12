@@ -1,6 +1,6 @@
+import os
 import subprocess
 import sys
-import os
 
 
 def run_tests():
@@ -19,9 +19,9 @@ def run_tests():
     for i in range(1, 21):
         print(f"🔄 Iteration {i:02d}/20: ", end="", flush=True)
 
-        # Execute python -m unittest tests/test_suite.py
+        # Execute python -m unittest discover -s tests -p "test_*.py"
         result = subprocess.run(
-            [venv_python, "-m", "unittest", test_suite_path],
+            [venv_python, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,

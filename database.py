@@ -103,11 +103,13 @@ async def init_db(db_path: str = DB_PATH) -> None:
                             FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
                         );
                     """)
+                    await db.execute("PRAGMA foreign_keys = OFF;")
                     await db.execute("""
                         INSERT INTO messages (id, user_id, role, content, timestamp)
                         SELECT id, user_id, role, content, timestamp FROM messages_old;
                     """)
                     await db.execute("DROP TABLE messages_old;")
+                    await db.execute("PRAGMA foreign_keys = ON;")
                 else:
                     await db.execute("""
                         CREATE TABLE IF NOT EXISTS messages (
@@ -146,11 +148,13 @@ async def init_db(db_path: str = DB_PATH) -> None:
                             FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
                         );
                     """)
+                    await db.execute("PRAGMA foreign_keys = OFF;")
                     await db.execute("""
                         INSERT INTO stats (id, user_id, model, prompt_tokens, completion_tokens, latency, timestamp)
                         SELECT id, user_id, model, prompt_tokens, completion_tokens, latency, timestamp FROM stats_old;
                     """)
                     await db.execute("DROP TABLE stats_old;")
+                    await db.execute("PRAGMA foreign_keys = ON;")
                 else:
                     await db.execute("""
                         CREATE TABLE IF NOT EXISTS stats (

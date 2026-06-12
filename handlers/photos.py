@@ -1,9 +1,11 @@
 import base64
 import html
 import logging
+
 from telegram import Update
 from telegram.ext import ContextTypes
-from database import get_user_mode, log_message, log_usage_stats, get_user_settings
+
+from database import get_user_mode, get_user_settings, log_message, log_usage_stats
 from llm import ask_llm
 from sender import send_response
 

@@ -1,10 +1,12 @@
+import logging
 import os
 import time
-import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
+
 import config
-from database import get_db_connection, DB_PATH
+from database import DB_PATH, get_db_connection
 from llm import key_pool
 
 logger = logging.getLogger(__name__)
