@@ -590,6 +590,25 @@ class TestLLMAdditional(unittest.IsolatedAsyncioTestCase):
         config.OPENROUTER_API_KEY = self.original_openrouter_key
         llm.key_pool.cooldowns.clear()
 
+    def test_is_response_complete(self):
+        # 1. Complete responses
+        self.assertTrue(llm.is_response_complete("Hello world!"))
+        self.assertTrue(llm.is_response_complete("На фотографии изображено **красное яблоко**."))
+        self.assertTrue(llm.is_response_complete("```python\nprint(123)\n```"))
+        self.assertTrue(llm.is_response_complete("| A | B |\n|---|---|\n| 1 | 2 |"))
+        self.assertTrue(llm.is_response_complete("Вес: 100 г"))
+        self.assertTrue(llm.is_response_complete("Калории: 94"))
+        self.assertTrue(llm.is_response_complete("Это очень полезно."))
+
+        # 2. Incomplete/truncated responses
+        self.assertFalse(llm.is_response_complete(""))
+        self.assertFalse(llm.is_response_complete("```python\nprint(123)"))  # Unclosed code block
+        self.assertFalse(llm.is_response_complete("This is **bold text"))      # Unclosed bold
+        self.assertFalse(llm.is_response_complete("## 📊 Таблица КБЖУ\n\n| Продукт | Вес (г) | Белки")) # Cut-off table row
+        self.assertFalse(llm.is_response_complete("Яблоко — это прекрасный выбор для перекуса или дополнения к основному приему пищи. Оно содержит много витаминов и полезных веществ, которые благотворно влияют на пищеварительную систему человека и дают энергию на весь день без лишних калорий, что делает его отличным выбором для здорового")) # No punctuation/units at end
+        self.assertFalse(llm.is_response_complete("Рекомендации:"))  # Ends with colon
+        self.assertFalse(llm.is_response_complete("Вывод, и"))       # Ends with conjunction/comma
+
     @patch("httpx.AsyncClient.post")
     async def test_ask_llm_settings_mappings(self, mock_post):
         mock_response = MagicMock(spec=httpx.Response)

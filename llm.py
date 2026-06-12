@@ -106,6 +106,58 @@ def format_history_for_gemini(history: List[Dict[str, str]]) -> List[Dict[str, A
     return gemini_contents
 
 
+def is_response_complete(text: str) -> bool:
+    """
+    Checks if the generated response appears complete and is not cut off.
+    Returns True if complete, False if truncated.
+    """
+    if not text:
+        return False
+
+    stripped = text.strip()
+
+    # 1. Check for unclosed fenced code blocks
+    if stripped.count("```") % 2 != 0:
+        return False
+
+    # 2. Check for unclosed bold markers
+    if stripped.count("**") % 2 != 0:
+        return False
+
+    # 3. Check for obvious trailing cutoff symbols (like commas, colons, or dashes/conjunctions)
+    if stripped.endswith((",", ":", "-", "—", "and", "or", "with", "для", "и", "в", "на", "с")):
+        return False
+
+    # 4. Check for cut-off markdown table rows
+    lines = [line.strip() for line in stripped.split("\n") if line.strip()]
+    pipe_lines = [line for line in lines if "|" in line]
+    if pipe_lines:
+        for line in reversed(pipe_lines):
+            # If a line looks like a table row (has at least 2 pipes)
+            if line.count("|") >= 2:
+                # Table rows should end with a pipe
+                if not line.endswith("|"):
+                    return False
+                break
+
+    # 5. Check if the text is longer than 100 characters and ends with a word and no punctuation,
+    # excluding common unit abbreviations
+    last_word_match = re.search(r"\b([а-яА-ЯёЁa-zA-Z]+)\s*$", stripped)
+    if last_word_match:
+        last_word = last_word_match.group(1).lower()
+        allowed_units = {
+            "г", "г.", "ккал", "мл", "шт", "g", "kcal", "ml", "pcs",
+            "белки", "жиры", "углеводы", "калории",
+            "proteins", "fats", "carbs", "calories"
+        }
+        if last_word not in allowed_units:
+            # If no sentence-ending punctuation or markdown markers are at the end
+            if len(stripped) > 100 and not re.search(r"[.\!?*`_\)~\]\}\-\|>\b]\s*$", stripped):
+                return False
+
+    return True
+
+
 async def ask_llm(
     mode: str,
     history: List[Dict[str, str]],
@@ -173,13 +225,13 @@ async def ask_llm(
     temp_map = {"strict": 0.1, "balanced": 0.4, "creative": 0.9}
     temperature = temp_map.get(creativity, 0.4)
 
-    # Map max_length to maxOutputTokens
-    tokens_map = {"short": 600, "medium": 1500, "long": 3000}
-    max_tokens = tokens_map.get(max_length, 1500)
+    # Map max_length to maxOutputTokens (increased for safety buffer)
+    tokens_map = {"short": 1000, "medium": 2000, "long": 4000}
+    max_tokens = tokens_map.get(max_length, 2000)
 
     # Ensure nutrition mode has enough tokens to avoid truncating tables (unless short length is requested)
     if mode == "nutrition" and max_length != "short":
-        max_tokens = max(max_tokens, 1500)
+        max_tokens = max(max_tokens, 2000)
 
     # Construct the appropriate system prompt with language instruction
     system_prompt = SYSTEM_PROMPTS.get(mode, SYSTEM_PROMPTS["general"])
@@ -388,8 +440,20 @@ async def ask_llm(
                                 parts = (
                                     candidates[0].get("content", {}).get("parts", [])
                                 )
-                                if parts and "text" in parts[0]:
-                                    text_response = parts[0]["text"]
+                                # Join all text parts to get the full response content
+                                text_response = "".join(
+                                    part.get("text", "")
+                                    for part in parts
+                                    if "text" in part
+                                )
+                                if text_response:
+                                    if not is_response_complete(text_response):
+                                        logger.warning(
+                                            f"Direct Gemini ({model}) returned incomplete/truncated response: "
+                                            f"'{text_response[:100]}...', treating as failure to trigger fallback."
+                                        )
+                                        continue
+
                                     latency = time.time() - start_time
 
                                     # Retrieve tokens from usageMetadata
@@ -491,6 +555,14 @@ async def ask_llm(
                         choices = data.get("choices", [])
                         if choices and choices[0].get("message", {}).get("content"):
                             text_response = choices[0]["message"]["content"]
+
+                            # If this is not the last model in the list, and the response is incomplete, try next model
+                            if model != openrouter_models[-1] and not is_response_complete(text_response):
+                                logger.warning(
+                                    f"OpenRouter ({model}) returned incomplete/truncated response, trying next model."
+                                )
+                                continue
+
                             latency = time.time() - start_time
 
                             # Retrieve tokens from usage metadata
