@@ -8,7 +8,7 @@ from telegram import (
 )
 from telegram.ext import ContextTypes
 
-from database import clear_chat_history, get_usage_stats, set_user_mode, upsert_user
+from src.database import clear_chat_history, get_usage_stats, set_user_mode, upsert_user
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

@@ -1,7 +1,7 @@
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from database import (
+from src.database import (
     get_chat_history,
     get_user_mode,
     get_user_settings,
@@ -9,9 +9,11 @@ from database import (
     log_usage_stats,
     set_user_mode,
 )
-from llm import ask_llm
-from sender import send_response
+from src.orchestrator import Orchestrator
+from src.sender import send_response
 
+# Initialize the orchestrator globally for now
+orchestrator = Orchestrator()
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
@@ -44,17 +46,17 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_html("Режим работы изменен на: <b>💬 Общение</b>")
         return
     elif text == "📊 Статистика":
-        from handlers.commands import stats_command
+        from src.handlers.commands import stats_command
 
         await stats_command(update, context)
         return
     elif text == "🧹 Очистить чат":
-        from handlers.commands import clear_command
+        from src.handlers.commands import clear_command
 
         await clear_command(update, context)
         return
     elif text == "⚙️ Настройки":
-        from handlers.settings import settings_command
+        from src.handlers.settings import settings_command
 
         await settings_command(update, context)
         return
@@ -76,10 +78,16 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # 3.5. Retrieve settings
     settings = await get_user_settings(user_id=user_id)
 
-    # 4. Query LLM
-    response_text, model_name, prompt_tokens, completion_tokens, latency = (
-        await ask_llm(mode=mode, history=history, user_settings=settings)
+    # 4. Query Orchestrator
+    response_text = await orchestrator.route_and_process(
+        mode=mode, user_input=text, history=history, user_settings=settings
     )
+    
+    # Placeholder telemetry
+    model_name = "Agentic-LLM"
+    prompt_tokens = 0
+    completion_tokens = 0
+    latency = 0.0
 
     if response_text:
         # 5. Save bot's reply

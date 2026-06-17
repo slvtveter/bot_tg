@@ -23,9 +23,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of the application code
 COPY --chown=botuser:botgroup . .
 
-# Expose volume for persistent database
-VOLUME ["/data"]
-
 # Switch to the non-root user
 USER botuser
 

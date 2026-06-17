@@ -4,8 +4,8 @@ import uuid
 from telegram import InlineQueryResultArticle, InputTextMessageContent, Update
 from telegram.ext import ContextTypes
 
-from llm import ask_llm
-from utils import to_telegram_html
+from src.llm import ask_llm
+from src.utils import to_telegram_html
 
 logger = logging.getLogger(__name__)
 

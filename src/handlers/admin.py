@@ -5,9 +5,9 @@ import time
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-import config
-from database import DB_PATH, get_db_connection
-from llm import key_pool
+from src import config
+from src.database import DB_PATH, get_db_connection
+from src.llm import key_pool
 
 logger = logging.getLogger(__name__)
 

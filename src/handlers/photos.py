@@ -5,9 +5,9 @@ import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from database import get_user_mode, get_user_settings, log_message, log_usage_stats
-from llm import ask_llm
-from sender import send_response
+from src.database import get_user_mode, get_user_settings, log_message, log_usage_stats
+from src.llm import ask_llm
+from src.sender import send_response
 
 logger = logging.getLogger(__name__)
 

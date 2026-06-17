@@ -1,7 +1,7 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from database import get_user_settings, set_user_setting
+from src.database import get_user_settings, set_user_setting
 
 # Translation maps for display
 LENGTH_MAP = {"short": "Краткий ⚡", "medium": "Средний ⚖️", "long": "Подробный 📖"}

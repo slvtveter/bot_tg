@@ -12,7 +12,7 @@ import logging
 import httpx
 from telegram import Bot, Message
 
-from utils import normalize_markdown_tables, to_telegram_html
+from src.utils import normalize_markdown_tables, to_telegram_html
 
 logger = logging.getLogger(__name__)
 

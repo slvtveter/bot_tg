@@ -9,9 +9,9 @@ from telegram.ext import (
     filters,
 )
 
-import config
-from database import init_db
-from handlers import (
+from src import config
+from src.database import init_db
+from src.handlers import (
     admin_callback,
     admin_command,
     clear_command,
