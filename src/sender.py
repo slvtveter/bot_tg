@@ -81,8 +81,28 @@ async def send_response(
         logger.info("Sent response via sendMessage (plain text fallback)")
         return msg
     except Exception as e:
-        logger.error(f"All send methods failed: {e}")
-        return None
+        logger.warning(f"sendMessage plain text (as reply) failed: {e}")
+
+    # --- 4. Absolute last resort: drop reply_to_message_id entirely ---
+    # If the message being replied to was deleted or is otherwise
+    # unreachable, every tier above fails purely because of the reply
+    # link, not the content - send as a standalone message instead of
+    # giving up and leaving the user with no response at all.
+    if reply_to_message_id is not None:
+        try:
+            msg = await bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                reply_markup=reply_markup,
+            )
+            logger.info("Sent response via sendMessage (dropped invalid reply_to_message_id)")
+            return msg
+        except Exception as e:
+            logger.error(f"All send methods failed: {e}")
+            return None
+
+    logger.error("All send methods failed.")
+    return None
 
 
 async def _send_rich_message(
