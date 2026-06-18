@@ -330,6 +330,45 @@ async def set_user_setting(
         raise
 
 
+async def get_user_activity_summary(user_id: int, db_path: str = DB_PATH) -> Dict[str, Any]:
+    """
+    Returns simple, always-accurate activity counters for a user (total
+    messages sent and total meals analyzed lifetime), independent of the
+    per-request model/token telemetry in the stats table.
+    """
+    try:
+        async with get_db_connection(db_path) as db:
+            async with db.execute(
+                "SELECT COUNT(*) FROM messages WHERE user_id = ? AND role = 'user'",
+                (user_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                message_count = row[0] if row else 0
+
+            async with db.execute(
+                "SELECT COUNT(*) FROM nutrition_log WHERE user_id = ?",
+                (user_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                meals_analyzed = row[0] if row else 0
+
+            async with db.execute(
+                "SELECT created_at FROM users WHERE user_id = ?",
+                (user_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                member_since = row[0] if row else None
+
+            return {
+                "message_count": message_count,
+                "meals_analyzed": meals_analyzed,
+                "member_since": member_since,
+            }
+    except Exception as e:
+        logger.error(f"Error getting activity summary for user {user_id}: {e}")
+        return {"message_count": 0, "meals_analyzed": 0, "member_since": None}
+
+
 async def log_message(
     user_id: int, role: str, content: str, db_path: str = DB_PATH
 ) -> None:

@@ -15,6 +15,7 @@ from src.database import (
     get_all_chat_history,
     get_today_nutrition_totals,
     get_usage_stats,
+    get_user_activity_summary,
     set_user_mode,
     upsert_user,
 )
@@ -197,32 +198,30 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     stats = await get_usage_stats(user_id=user.id)
+    activity = await get_user_activity_summary(user_id=user.id)
 
-    if stats["total_requests"] == 0:
+    if stats["total_requests"] == 0 and activity["message_count"] == 0:
         await update.message.reply_html(
             "У вас пока нет статистики использования. Отправьте мне несколько сообщений!"
         )
         return
 
+    member_since = (activity["member_since"] or "").split(" ")[0]
+
     response = (
         f"📊 <b>Ваша статистика использования:</b>\n\n"
-        f"• Всего запросов: <code>{stats['total_requests']}</code>\n"
-        f"• Потрачено токенов (всего): <code>{stats['total_tokens']}</code>\n"
-        f"  - Промпт: <code>{stats['total_prompt_tokens']}</code>\n"
-        f"  - Ответ: <code>{stats['total_completion_tokens']}</code>\n"
-        f"• Средняя задержка (latency): <code>{stats['avg_latency']:.2f} сек</code>\n"
+        f"• Всего сообщений: <code>{activity['message_count']}</code>\n"
+        f"• Проанализировано блюд: <code>{activity['meals_analyzed']}</code>\n"
+        f"• Средняя задержка ответа: <code>{stats['avg_latency']:.2f} сек</code>\n"
     )
+    if member_since:
+        response += f"• С нами с: <code>{member_since}</code>\n"
 
     if stats.get("model_stats"):
-        response += "\n🤖 <b>По моделям:</b>\n"
+        response += "\n🤖 <b>Запросов по моделям:</b>\n"
         for model, m_data in stats["model_stats"].items():
             escaped_model = html.escape(model)
-            response += (
-                f"- <b>{escaped_model}</b>:\n"
-                f"  Запросы: <code>{m_data['requests']}</code>, "
-                f"Токены: <code>{m_data['total_tokens']}</code>, "
-                f"Задержка: <code>{m_data['avg_latency']:.2f} сек</code>\n"
-            )
+            response += f"- <b>{escaped_model}</b>: <code>{m_data['requests']}</code>\n"
 
     await update.message.reply_html(response)
 
