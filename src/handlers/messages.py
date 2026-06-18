@@ -10,6 +10,7 @@ from src.database import (
     log_message,
     log_usage_stats,
     set_user_mode,
+    upsert_user,
 )
 from src.orchestrator import Orchestrator
 from src.sender import send_response
@@ -132,6 +133,16 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     should_respond, text = resolve_group_addressing(update, context, text)
     if not should_respond:
         return
+
+    # Defensive: guarantee the user row exists before any FK-constrained
+    # write (log_message/log_usage_stats), in case this user reaches the
+    # handler without ever triggering /start (e.g. a fresh database).
+    await upsert_user(
+        user_id=user_id,
+        username=user.username,
+        first_name=user.first_name,
+        last_name=user.last_name,
+    )
 
     # Route Bottom Keyboard Buttons
     if text == "🍏 Питание":

@@ -11,6 +11,7 @@ from src.database import (
     log_message,
     log_nutrition_entry,
     log_usage_stats,
+    upsert_user,
 )
 from src.handlers.messages import resolve_group_addressing
 from src.llm import ask_llm
@@ -40,6 +41,14 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     should_respond, caption = resolve_group_addressing(update, context, caption)
     if not should_respond:
         return
+
+    # Defensive: guarantee the user row exists before any FK-constrained write.
+    await upsert_user(
+        user_id=user_id,
+        username=user.username,
+        first_name=user.first_name,
+        last_name=user.last_name,
+    )
 
     mode = await get_user_mode(user_id)
 

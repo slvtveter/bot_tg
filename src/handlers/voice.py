@@ -5,6 +5,7 @@ import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 
+from src.database import upsert_user
 from src.handlers.messages import process_text_message, resolve_group_addressing
 from src.llm import ask_llm
 
@@ -42,6 +43,14 @@ async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     should_respond, _ = resolve_group_addressing(update, context, "")
     if not should_respond:
         return
+
+    # Defensive: guarantee the user row exists before any FK-constrained write.
+    await upsert_user(
+        user_id=user_id,
+        username=user.username,
+        first_name=user.first_name,
+        last_name=user.last_name,
+    )
 
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
 
