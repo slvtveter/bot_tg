@@ -27,3 +27,10 @@ if not GOOGLE_API_KEYS and not OPENROUTER_API_KEY:
 # Parse admin IDs list
 raw_admin_ids = os.getenv("ADMIN_IDS", "")
 ADMIN_IDS = [int(x.strip()) for x in raw_admin_ids.split(",") if x.strip().isdigit()]
+
+# If WEBHOOK_URL is set (e.g. on Render), the bot runs in webhook mode instead
+# of long-polling, so an incoming Telegram update is the request that wakes a
+# free-tier service back up from sleep. Left empty for local/Docker use, where
+# polling is simpler and doesn't require a public HTTPS endpoint.
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").rstrip("/")
+PORT = int(os.getenv("PORT", "8443"))

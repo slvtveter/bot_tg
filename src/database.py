@@ -169,12 +169,29 @@ async def init_db(db_path: str = DB_PATH) -> None:
                         )
                     """)
 
-            # 4. Create Indexes if they do not exist
+            # 4. Create nutrition_log table (per-meal calorie/macro totals, for /today reports)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS nutrition_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    calories REAL,
+                    protein REAL,
+                    fat REAL,
+                    carbs REAL,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+                )
+            """)
+
+            # 5. Create Indexes if they do not exist
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_messages_user_id ON messages(user_id);"
             )
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_stats_user_id ON stats(user_id);"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_nutrition_log_user_id ON nutrition_log(user_id);"
             )
 
             await db.commit()
@@ -486,9 +503,9 @@ async def get_chat_history(
             async with db.execute(
                 """
                 SELECT role, content FROM (
-                    SELECT id, role, content FROM messages 
-                    WHERE user_id = ? 
-                    ORDER BY id DESC 
+                    SELECT id, role, content FROM messages
+                    WHERE user_id = ?
+                    ORDER BY id DESC
                     LIMIT ?
                 ) ORDER BY id ASC
             """,
@@ -499,3 +516,126 @@ async def get_chat_history(
     except Exception as e:
         logger.error(f"Error getting chat history for user {user_id}: {e}")
         return []
+
+
+async def get_all_chat_history(
+    user_id: int, db_path: str = DB_PATH
+) -> List[Dict[str, str]]:
+    """
+    Retrieves the entire message history for a user (chronological), with
+    timestamps, for export purposes (no row limit, unlike get_chat_history).
+    """
+    try:
+        async with get_db_connection(db_path) as db:
+            async with db.execute(
+                """
+                SELECT role, content, timestamp FROM messages
+                WHERE user_id = ?
+                ORDER BY id ASC
+            """,
+                (user_id,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [
+                    {"role": row[0], "content": row[1], "timestamp": row[2]}
+                    for row in rows
+                ]
+    except Exception as e:
+        logger.error(f"Error getting full chat history for user {user_id}: {e}")
+        return []
+
+
+async def log_nutrition_entry(
+    user_id: int,
+    calories: float,
+    protein: float,
+    fat: float,
+    carbs: float,
+    db_path: str = DB_PATH,
+) -> None:
+    """
+    Logs the parsed macro totals for a single meal analyzed by the nutrition agent.
+    """
+    try:
+        async with get_db_connection(db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO nutrition_log (user_id, calories, protein, fat, carbs)
+                VALUES (?, ?, ?, ?, ?)
+            """,
+                (user_id, calories, protein, fat, carbs),
+            )
+            await db.commit()
+            logger.info(f"Nutrition entry logged for user {user_id}: {calories} kcal.")
+    except Exception as e:
+        logger.error(f"Error logging nutrition entry for user {user_id}: {e}")
+        raise
+
+
+async def get_today_nutrition_totals(user_id: int, db_path: str = DB_PATH) -> Dict[str, Any]:
+    """
+    Sums calories/protein/fat/carbs logged today (local server date) for a user.
+    """
+    try:
+        async with get_db_connection(db_path) as db:
+            async with db.execute(
+                """
+                SELECT COUNT(*), SUM(calories), SUM(protein), SUM(fat), SUM(carbs)
+                FROM nutrition_log
+                WHERE user_id = ? AND date(timestamp) = date('now')
+            """,
+                (user_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+            return {
+                "entries": row[0] or 0,
+                "calories": row[1] or 0.0,
+                "protein": row[2] or 0.0,
+                "fat": row[3] or 0.0,
+                "carbs": row[4] or 0.0,
+            }
+    except Exception as e:
+        logger.error(f"Error getting today's nutrition totals for user {user_id}: {e}")
+        return {"entries": 0, "calories": 0.0, "protein": 0.0, "fat": 0.0, "carbs": 0.0}
+
+
+async def get_all_user_ids(db_path: str = DB_PATH) -> List[int]:
+    """
+    Returns the user_id of every registered user, for admin broadcast purposes.
+    """
+    try:
+        async with get_db_connection(db_path) as db:
+            async with db.execute("SELECT user_id FROM users") as cursor:
+                rows = await cursor.fetchall()
+                return [row[0] for row in rows]
+    except Exception as e:
+        logger.error(f"Error retrieving all user ids: {e}")
+        return []
+
+
+async def delete_last_exchange(user_id: int, db_path: str = DB_PATH) -> bool:
+    """
+    Deletes the most recent user message and the most recent assistant message
+    that follows it (i.e. the last user/assistant exchange), so the user can
+    undo their last interaction. Returns True if anything was deleted.
+    """
+    try:
+        async with get_db_connection(db_path) as db:
+            async with db.execute(
+                "SELECT id FROM messages WHERE user_id = ? ORDER BY id DESC LIMIT 2",
+                (user_id,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+            if not rows:
+                return False
+            ids = [row[0] for row in rows]
+            await db.execute(
+                f"DELETE FROM messages WHERE id IN ({','.join('?' * len(ids))})",
+                ids,
+            )
+            await db.commit()
+            logger.info(f"Deleted last exchange ({len(ids)} message(s)) for user {user_id}.")
+            return True
+    except Exception as e:
+        logger.error(f"Error deleting last exchange for user {user_id}: {e}")
+        raise

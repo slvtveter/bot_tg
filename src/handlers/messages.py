@@ -1,4 +1,6 @@
-from telegram import Update
+import re
+
+from telegram import Bot, Update
 from telegram.ext import ContextTypes
 
 from src.database import (
@@ -15,10 +17,105 @@ from src.sender import send_response
 # Initialize the orchestrator globally for now
 orchestrator = Orchestrator()
 
+
+def resolve_group_addressing(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, text: str
+) -> "tuple[bool, str]":
+    """
+    In private chats the bot always responds. In group/supergroup chats it
+    only responds when explicitly addressed, to avoid spamming every message
+    in the group and burning through the shared LLM quota on chatter that
+    wasn't meant for it. "Addressed" means either an @mention of the bot's
+    username anywhere in the text, or a reply to one of the bot's own
+    messages. Returns (should_respond, text_with_mention_stripped).
+    """
+    chat = update.effective_chat
+    if not chat or chat.type not in ("group", "supergroup"):
+        return True, text
+
+    bot_username = context.bot.username
+    mention = f"@{bot_username}" if bot_username else None
+    is_mentioned = bool(mention) and mention.lower() in text.lower()
+
+    reply_to = update.message.reply_to_message if update.message else None
+    is_reply_to_bot = bool(
+        reply_to and reply_to.from_user and reply_to.from_user.id == context.bot.id
+    )
+
+    if not (is_mentioned or is_reply_to_bot):
+        return False, text
+
+    if is_mentioned and mention:
+        text = re.sub(re.escape(mention), "", text, flags=re.IGNORECASE).strip()
+
+    return True, text
+
+
+async def process_text_message(
+    bot: Bot, chat_id: int, user_id: int, text: str, reply_to_message_id: int
+) -> None:
+    """
+    Shared pipeline for any message that resolves to plain text input (typed
+    messages, or a transcription of a voice message): logs the message,
+    routes it through the Orchestrator for the user's current mode, logs the
+    reply and usage stats, and sends the response back to Telegram.
+    """
+    # 1. Log the user's message first
+    await log_message(user_id=user_id, role="user", content=text)
+
+    # 2. Query user's current mode
+    mode = await get_user_mode(user_id=user_id)
+
+    # 3. Retrieve recent history (including the logged user message)
+    history = await get_chat_history(user_id=user_id, limit=15)
+
+    # 3.5. Retrieve settings
+    settings = await get_user_settings(user_id=user_id)
+
+    # 4. Query Orchestrator
+    response_text = await orchestrator.route_and_process(
+        mode=mode, user_input=text, history=history, user_settings=settings, user_id=user_id
+    )
+
+    # Placeholder telemetry
+    model_name = "Agentic-LLM"
+    prompt_tokens = 0
+    completion_tokens = 0
+    latency = 0.0
+
+    if response_text:
+        # 5. Save bot's reply
+        await log_message(user_id=user_id, role="assistant", content=response_text)
+
+        # 6. Save stats to DB
+        await log_usage_stats(
+            user_id=user_id,
+            model=model_name or "unknown",
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            latency=latency,
+        )
+
+        # 7. Send reply using Rich Message API (with fallback)
+        await send_response(
+            bot=bot,
+            chat_id=chat_id,
+            text=response_text,
+            reply_to_message_id=reply_to_message_id,
+        )
+    else:
+        # All models failed
+        await bot.send_message(
+            chat_id=chat_id,
+            text="⚠️ К сожалению, не удалось получить ответ от ИИ. Пожалуйста, попробуйте позже.",
+            reply_to_message_id=reply_to_message_id,
+        )
+
+
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Handles incoming text messages, routes menu button selections, retrieves chat history,
-    queries the LLM, saves interaction details to the database, and sends HTML responses.
+    Handles incoming text messages, routes menu button selections, then
+    delegates to process_text_message for the actual LLM round-trip.
     """
     user = update.effective_user
     if (
@@ -31,6 +128,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     user_id = user.id
     text = update.message.text.strip()
+
+    should_respond, text = resolve_group_addressing(update, context, text)
+    if not should_respond:
+        return
 
     # Route Bottom Keyboard Buttons
     if text == "🍏 Питание":
@@ -66,51 +167,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         chat_id=update.effective_chat.id, action="typing"
     )
 
-    # 1. Log the user's message first
-    await log_message(user_id=user_id, role="user", content=text)
-
-    # 2. Query user's current mode
-    mode = await get_user_mode(user_id=user_id)
-
-    # 3. Retrieve recent history (including the logged user message)
-    history = await get_chat_history(user_id=user_id, limit=15)
-
-    # 3.5. Retrieve settings
-    settings = await get_user_settings(user_id=user_id)
-
-    # 4. Query Orchestrator
-    response_text = await orchestrator.route_and_process(
-        mode=mode, user_input=text, history=history, user_settings=settings
+    await process_text_message(
+        bot=context.bot,
+        chat_id=update.effective_chat.id,
+        user_id=user_id,
+        text=text,
+        reply_to_message_id=update.message.message_id,
     )
-    
-    # Placeholder telemetry
-    model_name = "Agentic-LLM"
-    prompt_tokens = 0
-    completion_tokens = 0
-    latency = 0.0
-
-    if response_text:
-        # 5. Save bot's reply
-        await log_message(user_id=user_id, role="assistant", content=response_text)
-
-        # 6. Save stats to DB
-        await log_usage_stats(
-            user_id=user_id,
-            model=model_name or "unknown",
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            latency=latency,
-        )
-
-        # 7. Send reply using Rich Message API (with fallback)
-        await send_response(
-            bot=context.bot,
-            chat_id=update.effective_chat.id,
-            text=response_text,
-            reply_to_message_id=update.message.message_id,
-        )
-    else:
-        # All models failed
-        await update.message.reply_text(
-            "⚠️ К сожалению, не удалось получить ответ от ИИ. Пожалуйста, попробуйте позже."
-        )

@@ -23,7 +23,11 @@ SYSTEM_PROMPTS = {
         "|:---|---|---|---|---|\n"
         "| Яблоко | 52 | 0.3 | 0.2 | 13.8 |\n\n"
         "Используй заголовки (## Заголовок), **жирный текст** для ключевых данных, "
-        "маркированные списки (- пункт). Давай полезные рекомендации по питанию."
+        "маркированные списки (- пункт). Давай полезные рекомендации по питанию. "
+        "В САМОМ КОНЦЕ ответа, на отдельной последней строке, ОБЯЗАТЕЛЬНО выведи "
+        "итоговые цифры по всему приёму пищи в строго следующем техническом формате "
+        "(без дополнительных слов на этой строке): "
+        "[NUTRITION_DATA] calories=ЧИСЛО protein=ЧИСЛО fat=ЧИСЛО carbs=ЧИСЛО"
     ),
     "math": (
         "Ты — подробный и терпеливый преподаватель математики. Объясняй формулы и математические концепции. "
@@ -60,6 +64,11 @@ class KeyPool:
 
 
 key_pool = KeyPool()
+
+# Runtime kill switch: model ids placed here are skipped by both the direct
+# Gemini and OpenRouter fallback loops below, without needing a redeploy.
+# Toggled from the admin panel (src/handlers/admin.py).
+disabled_models: set = set()
 
 
 def estimate_tokens(text: str) -> int:
@@ -165,6 +174,8 @@ async def ask_llm(
     vision_prompt: Optional[str] = None,
     user_settings: Optional[Dict[str, str]] = None,
     is_summarizing: bool = False,
+    audio_base64: Optional[str] = None,
+    audio_mime_type: str = "audio/ogg",
 ) -> Tuple[Optional[str], Optional[str], int, int, float]:
     """
     Queries Gemini API directly with key rotation, falling back to OpenRouter.
@@ -318,21 +329,82 @@ async def ask_llm(
                     "Successfully summarized history and prepended to message log."
                 )
 
-    # Define models to try
-    if image_base64:
-        # Vision models
-        direct_models = ["gemini-2.5-flash"]
-        openrouter_models = ["google/gemini-2.5-flash"]
+    # Define models to try, ordered from highest-remaining-quota/cheapest to
+    # most expensive/limited, so a single project burning through its daily
+    # quota on one model still has a long chain of alternatives to fall
+    # through to before giving up (several projects share the same key pool).
+    media_base64 = image_base64 or audio_base64
+    media_mime_type = "image/jpeg" if image_base64 else audio_mime_type
+
+    if media_base64:
+        # Vision/audio models (all support multimodal input)
+        direct_models = [
+            "gemini-3.1-flash-lite",
+            "gemini-2.5-flash-lite",
+            "gemini-3-flash-preview",
+            "gemini-3.5-flash",
+            "gemini-2.5-flash",
+            "gemini-2.0-flash-lite",
+            "gemini-2.0-flash",
+            "gemini-2.5-pro",
+            "gemini-3.1-pro-preview",
+        ]
+        openrouter_models = [
+            # Free vision-capable models first (account currently has $0
+            # OpenRouter credits, so paid models below would just fail).
+            "google/gemma-4-31b-it:free",
+            "google/gemma-4-26b-a4b-it:free",
+            # Paid Google models, kept as a last resort in case credits are
+            # ever added to the OpenRouter account.
+            "google/gemini-3.1-flash-lite",
+            "google/gemini-2.5-flash-lite",
+            "google/gemini-3-flash-preview",
+            "google/gemini-3.5-flash",
+            "google/gemini-2.5-flash",
+        ]
         prompt_text = vision_prompt or "Describe this image."
+        if audio_base64 and not image_base64:
+            # OpenRouter's image_url content type doesn't apply to audio, and
+            # none of the configured free models reliably accept raw audio
+            # input through that schema, so audio only goes through direct
+            # Gemini (which supports audio natively via inlineData).
+            openrouter_models = []
     else:
         # Text models
-        direct_models = ["gemini-2.5-flash-lite", "gemini-2.5-flash"]
+        direct_models = [
+            "gemini-3.1-flash-lite",
+            "gemini-2.5-flash-lite",
+            "gemini-3-flash-preview",
+            "gemini-3.5-flash",
+            "gemini-2.5-flash",
+            "gemini-2.0-flash-lite",
+            "gemini-2.0-flash",
+            "gemini-2.5-pro",
+            "gemini-3.1-pro-preview",
+        ]
         openrouter_models = [
-            "google/gemini-2.5-flash-lite",
-            "google/gemini-2.5-flash",
+            # Free models first (account currently has $0 OpenRouter
+            # credits, so paid models below would just fail).
             "openai/gpt-oss-120b:free",
             "openai/gpt-oss-20b:free",
+            "meta-llama/llama-3.3-70b-instruct:free",
+            "qwen/qwen3-next-80b-a3b-instruct:free",
+            "nousresearch/hermes-3-llama-3.1-405b:free",
+            "google/gemma-4-31b-it:free",
+            "nvidia/nemotron-3-super-120b-a12b:free",
+            # Paid Google models, kept as a last resort in case credits are
+            # ever added to the OpenRouter account.
+            "google/gemini-3.1-flash-lite",
+            "google/gemini-2.5-flash-lite",
+            "google/gemini-3-flash-preview",
+            "google/gemini-3.5-flash",
+            "google/gemini-2.5-flash",
         ]
+
+    # Apply the runtime kill switch (admin panel) before trying any model.
+    if disabled_models:
+        direct_models = [m for m in direct_models if m not in disabled_models]
+        openrouter_models = [m for m in openrouter_models if m not in disabled_models]
 
     # --- 1. Direct Gemini API calling with key rotation ---
     if key_pool.get_active_keys():
@@ -354,8 +426,8 @@ async def ask_llm(
                             f"/v1beta/models/{model}:generateContent?key={key}"
                         )
 
-                        if image_base64:
-                            # Construct vision request payload
+                        if media_base64:
+                            # Construct vision/audio request payload
                             payload = {
                                 "contents": [
                                     {
@@ -363,8 +435,8 @@ async def ask_llm(
                                             {"text": prompt_text},
                                             {
                                                 "inlineData": {
-                                                    "mimeType": "image/jpeg",
-                                                    "data": image_base64,
+                                                    "mimeType": media_mime_type,
+                                                    "data": media_base64,
                                                 }
                                             },
                                         ]
@@ -397,7 +469,7 @@ async def ask_llm(
 
                         # Log payload details for debugging (hiding base64 data)
                         payload_log = payload.copy()
-                        if image_base64 and "contents" in payload_log:
+                        if media_base64 and "contents" in payload_log:
                             payload_log["contents"] = [
                                 {
                                     "parts": [
@@ -469,7 +541,7 @@ async def ask_llm(
                                             estimate_history_tokens(
                                                 history, system_prompt
                                             )
-                                            if not image_base64
+                                            if not media_base64
                                             else estimate_tokens(prompt_text)
                                         )
                                     if completion_tokens is None:
@@ -574,7 +646,7 @@ async def ask_llm(
                             if prompt_tokens is None:
                                 prompt_tokens = (
                                     estimate_history_tokens(history, system_prompt)
-                                    if not image_base64
+                                    if not media_base64
                                     else estimate_tokens(prompt_text)
                                 )
                             if completion_tokens is None:

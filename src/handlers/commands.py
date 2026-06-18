@@ -1,4 +1,5 @@
 import html
+import io
 
 from telegram import (
     InlineKeyboardButton,
@@ -8,7 +9,15 @@ from telegram import (
 )
 from telegram.ext import ContextTypes
 
-from src.database import clear_chat_history, get_usage_stats, set_user_mode, upsert_user
+from src.database import (
+    clear_chat_history,
+    delete_last_exchange,
+    get_all_chat_history,
+    get_today_nutrition_totals,
+    get_usage_stats,
+    set_user_mode,
+    upsert_user,
+)
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -57,6 +66,73 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     await clear_chat_history(user.id)
     await update.message.reply_html("История сообщений успешно очищена! 🧹")
+
+
+async def undo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Deletes the last user/assistant exchange from the chat history.
+    """
+    user = update.effective_user
+    if not user or not update.message:
+        return
+
+    deleted = await delete_last_exchange(user.id)
+    if deleted:
+        await update.message.reply_html("Последний обмен сообщениями удалён из истории.")
+    else:
+        await update.message.reply_html("История пуста, нечего отменять.")
+
+
+async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Sends the user's full chat history as a downloadable plain-text file.
+    """
+    user = update.effective_user
+    if not user or not update.message:
+        return
+
+    history = await get_all_chat_history(user.id)
+    if not history:
+        await update.message.reply_html("История пуста, нечего экспортировать.")
+        return
+
+    role_labels = {"user": "Пользователь", "assistant": "Ассистент", "system": "Система"}
+    lines = []
+    for msg in history:
+        label = role_labels.get(msg["role"], msg["role"])
+        lines.append(f"[{msg['timestamp']}] {label}: {msg['content']}")
+    file_content = "\n\n".join(lines).encode("utf-8")
+
+    await update.message.reply_document(
+        document=io.BytesIO(file_content),
+        filename=f"chat_history_{user.id}.txt",
+        caption=f"Экспорт истории сообщений ({len(history)} записей).",
+    )
+
+
+async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Shows the sum of calories/protein/fat/carbs logged today via the nutrition agent.
+    """
+    user = update.effective_user
+    if not user or not update.message:
+        return
+
+    totals = await get_today_nutrition_totals(user.id)
+    if totals["entries"] == 0:
+        await update.message.reply_html(
+            "Сегодня вы ещё не отправляли блюда на анализ в режиме 🍏 Питание."
+        )
+        return
+
+    response = (
+        f"📅 <b>Итоги питания за сегодня</b> ({totals['entries']} приём(а/ов) пищи):\n\n"
+        f"• Калории: <code>{totals['calories']:.0f}</code> ккал\n"
+        f"• Белки: <code>{totals['protein']:.1f}</code> г\n"
+        f"• Жиры: <code>{totals['fat']:.1f}</code> г\n"
+        f"• Углеводы: <code>{totals['carbs']:.1f}</code> г\n"
+    )
+    await update.message.reply_html(response)
 
 
 async def mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -173,8 +249,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "Универсальный помощник. Поддерживает контекст предыдущей беседы. "
         "Подходит для обычного общения, написания кода, переводов текстов и "
         "любых других вопросов.\n\n"
-        "🛠 <b>Настройки ИИ:</b>\n"
-        "Команда /settings позволяет настроить под вас длину ответов и "
-        "креативность (температуру) ИИ."
+        "🎤 <b>Голосовые сообщения:</b>\n"
+        "Можно просто наговорить вопрос голосом в любом режиме — бот распознает речь "
+        "и ответит так же, как на обычное текстовое сообщение.\n\n"
+        "👥 <b>Групповые чаты:</b>\n"
+        "Добавьте бота в группу и обращайтесь к нему через @упоминание или ответом "
+        "(reply) на его сообщение — в остальных сообщениях группы бот не участвует.\n\n"
+        "🛠 <b>Полезные команды:</b>\n"
+        "/today — итоги по питанию за сегодня (калории/БЖУ)\n"
+        "/undo — отменить последний обмен сообщениями\n"
+        "/export — выгрузить историю переписки в файл\n"
+        "/settings — настроить длину ответов и креативность (температуру) ИИ"
     )
     await update.message.reply_html(help_text)

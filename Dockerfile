@@ -27,4 +27,4 @@ COPY --chown=botuser:botgroup . .
 USER botuser
 
 # Run the bot application
-CMD ["python", "bot.py"]
+CMD ["python", "-m", "src.bot"]

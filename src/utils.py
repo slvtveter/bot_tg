@@ -1,5 +1,38 @@
 import html
 import re
+from typing import Dict, Optional, Tuple
+
+NUTRITION_DATA_RE = re.compile(
+    r"\n?\s*\[NUTRITION_DATA\]\s*"
+    r"calories=([\d.]+)\s*protein=([\d.]+)\s*fat=([\d.]+)\s*carbs=([\d.]+)\s*$"
+)
+
+
+def extract_nutrition_totals(text: str) -> Tuple[str, Optional[Dict[str, float]]]:
+    """
+    Looks for a trailing '[NUTRITION_DATA] calories=.. protein=.. fat=.. carbs=..'
+    marker line appended by the nutrition system prompt, strips it from the
+    user-visible text, and returns the parsed totals (or None if not found/parseable).
+    """
+    if not text:
+        return text, None
+
+    match = NUTRITION_DATA_RE.search(text)
+    if not match:
+        return text, None
+
+    cleaned_text = text[: match.start()].rstrip()
+    try:
+        totals = {
+            "calories": float(match.group(1)),
+            "protein": float(match.group(2)),
+            "fat": float(match.group(3)),
+            "carbs": float(match.group(4)),
+        }
+    except ValueError:
+        return text, None
+
+    return cleaned_text, totals
 
 
 def strip_markdown(val: str) -> str:

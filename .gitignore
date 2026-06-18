@@ -33,3 +33,6 @@ bot.db-wal
 bot.db-shm
 *.sqlite
 *.db
+
+# Scratch test artifacts
+tests_tmp/

@@ -5,9 +5,17 @@ import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from src.database import get_user_mode, get_user_settings, log_message, log_usage_stats
+from src.database import (
+    get_user_mode,
+    get_user_settings,
+    log_message,
+    log_nutrition_entry,
+    log_usage_stats,
+)
+from src.handlers.messages import resolve_group_addressing
 from src.llm import ask_llm
 from src.sender import send_response
+from src.utils import extract_nutrition_totals
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +36,11 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     user_id = user.id
+    caption = update.message.caption or ""
+    should_respond, caption = resolve_group_addressing(update, context, caption)
+    if not should_respond:
+        return
+
     mode = await get_user_mode(user_id)
 
     # Show typing status to user
@@ -40,8 +53,6 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         photo_file = await update.message.photo[-1].get_file()
         image_bytes = await photo_file.download_as_bytearray()
         image_base64 = base64.b64encode(image_bytes).decode("utf-8")
-
-        caption = update.message.caption or ""
 
         # Prepare the vision prompt based on the user's active mode
         if mode == "nutrition":
@@ -58,7 +69,11 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 "## 📋 Итого\n"
                 "Общую сумму КБЖУ **жирным текстом**.\n"
                 "## 💡 Рекомендации\n"
-                "Краткий вывод о пользе и рекомендации."
+                "Краткий вывод о пользе и рекомендации.\n\n"
+                "В САМОМ КОНЦЕ ответа, на отдельной последней строке, ОБЯЗАТЕЛЬНО выведи "
+                "итоговые цифры по всему приёму пищи в строго следующем техническом формате "
+                "(без дополнительных слов на этой строке): "
+                "[NUTRITION_DATA] calories=ЧИСЛО protein=ЧИСЛО fat=ЧИСЛО carbs=ЧИСЛО"
             )
             if caption:
                 vision_prompt += (
@@ -94,6 +109,17 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 user_settings=settings,
             )
         )
+
+        if response_text and mode == "nutrition":
+            response_text, totals = extract_nutrition_totals(response_text)
+            if totals:
+                await log_nutrition_entry(
+                    user_id=user_id,
+                    calories=totals["calories"],
+                    protein=totals["protein"],
+                    fat=totals["fat"],
+                    carbs=totals["carbs"],
+                )
 
         if response_text:
             # 5. Log assistant message
