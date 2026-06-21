@@ -168,6 +168,35 @@ def estimate_history_tokens(history: List[Dict[str, str]], system_prompt: str) -
     return estimate_tokens(total_text)
 
 
+# Conversation memory budget. The bot keeps the most recent messages that fit in
+# this many estimated tokens, so it has real short-term context without sending
+# a huge (expensive, slow) prompt - important on shared free-tier quotas. ~1500
+# tokens is roughly the last 8-12 turns of normal chat.
+HISTORY_TOKEN_BUDGET = 1500
+
+
+def trim_history(
+    history: List[Dict[str, str]], budget: int = HISTORY_TOKEN_BUDGET
+) -> List[Dict[str, str]]:
+    """
+    Keeps the most recent messages whose cumulative size fits the token budget,
+    preserving chronological order. The last message (the current user turn) is
+    always kept. Cheap and predictable - no extra summarization LLM call.
+    """
+    if not history:
+        return history
+    kept: List[Dict[str, str]] = []
+    total = 0
+    for msg in reversed(history):
+        cost = estimate_tokens(msg.get("content", ""))
+        if kept and total + cost > budget:
+            break
+        kept.append(msg)
+        total += cost
+    kept.reverse()
+    return kept
+
+
 def format_history_for_gemini(history: List[Dict[str, str]]) -> List[Dict[str, Any]]:
     gemini_contents = []
     for msg in history:
@@ -362,66 +391,30 @@ async def ask_llm(
 
     start_time = time.time()
 
-    # 2. Chat history summarization if size is excessive (only for text chat, when not already summarizing)
+    # 2. Trim chat history to the recent-context token budget (text chat only).
+    # Cheap and predictable: keeps the latest turns, drops older ones, and never
+    # makes an extra LLM call - friendly to free-tier quotas.
     if not image_base64 and not is_summarizing and history:
-        current_tokens = estimate_history_tokens(history, system_prompt)
-        if current_tokens > 6000 and len(history) > 10:
-            logger.info(
-                f"History size {current_tokens} exceeds 6000 tokens. Summarizing oldest 10 messages."
-            )
-            oldest_10 = history[:10]
-            remaining = history[10:]
+        history = trim_history(history)
 
-            # Construct system summarization prompt
-            summary_prompt = (
-                "Сжато и тезисно обобщи следующий диалог между пользователем (user) и ассистентом (assistant), "
-                "сохранив все важные факты, формулы, предпочтения или контекст. Ответь кратко на том же языке:\n\n"
-            )
-            for msg in oldest_10:
-                role_label = (
-                    "Пользователь" if msg.get("role") == "user" else "Ассистент"
-                )
-                summary_prompt += f"{role_label}: {msg.get('content')}\n"
-
-            summary_history = [{"role": "user", "content": summary_prompt}]
-
-            # Query LLM recursively for the summary, passing is_summarizing=True to avoid loops
-            summary_text, _, _, _, _ = await ask_llm(
-                mode="general",
-                history=summary_history,
-                user_settings=user_settings,
-                is_summarizing=True,
-            )
-
-            if summary_text:
-                summary_msg = {
-                    "role": "system",
-                    "content": f"[Предыдущий контекст: {summary_text.strip()}]",
-                }
-                history = [summary_msg] + remaining
-                logger.info(
-                    "Successfully summarized history and prepended to message log."
-                )
-
-    # Models to try, ordered quality-first: strong, fast "flash" models lead
-    # (best understanding for a chat bot, while still quick), then the cheaper
-    # "lite" and older tiers as quota fallbacks, then a "-latest" alias as a
-    # safety net, and finally the heavier "pro" model as a last direct resort.
-    # A request that exhausts the daily quota on one model still has a long
-    # chain to fall through before giving up (several projects share the pool).
+    # Models to try, ordered SPEED-FIRST: gemini-2.5-flash leads because it is
+    # both fast (~1s) and high quality; lite/2.0 tiers follow as fallbacks; the
+    # newer "preview" and "pro" models sit lower because they are slower and
+    # spikier (measured up to ~13s). A request that exhausts one model's daily
+    # quota still has a long chain to fall through (several projects share keys).
     media_base64 = image_base64 or audio_base64
     media_mime_type = "image/jpeg" if image_base64 else audio_mime_type
 
     if media_base64:
         # Vision/audio models (all support multimodal input)
         direct_models = [
-            "gemini-3-flash-preview",
             "gemini-2.5-flash",
-            "gemini-3.1-flash-lite",
             "gemini-2.5-flash-lite",
             "gemini-2.0-flash",
-            "gemini-2.0-flash-lite",
             "gemini-flash-latest",
+            "gemini-3.1-flash-lite",
+            "gemini-3-flash-preview",
+            "gemini-2.0-flash-lite",
             "gemini-2.5-pro",
         ]
         openrouter_models = [
@@ -447,13 +440,13 @@ async def ask_llm(
     else:
         # Text models
         direct_models = [
-            "gemini-3-flash-preview",
             "gemini-2.5-flash",
-            "gemini-3.1-flash-lite",
             "gemini-2.5-flash-lite",
             "gemini-2.0-flash",
-            "gemini-2.0-flash-lite",
             "gemini-flash-latest",
+            "gemini-3.1-flash-lite",
+            "gemini-3-flash-preview",
+            "gemini-2.0-flash-lite",
             "gemini-2.5-pro",
         ]
         openrouter_models = [

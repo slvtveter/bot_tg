@@ -25,15 +25,11 @@ Beyond text the bot accepts **photos** (a meal in Nutrition, a code screenshot i
 |---|---|---|
 | `/start` | everyone | Register and show the mode keyboard |
 | `/mode` | everyone | Switch between modes |
-| `/today` | everyone | Today's calorie/macro totals |
 | `/week` | everyone | Last 7 days of nutrition, with a daily average |
 | `/settings` | everyone | Response length, creativity, language |
 | `/stats` | everyone | Your activity: requests, meals, latency, join date, last seen |
-| `/undo` | everyone | Remove the last exchange from history |
-| `/export` | everyone | Download your chat history as a file |
-| `/clear` | everyone | Wipe your chat history |
+| `/clear` | everyone | Clear history and start a fresh conversation |
 | `/feedback <text>` | everyone | Send feedback or an idea (stored and forwarded to admins) |
-| `/id` | everyone | Show your Telegram ID (to put in `ADMIN_IDS`) |
 | `/admin` | admins | Dashboard: growth, active users, latency, key pool, top users, feedback, CSV export |
 | `/broadcast <text>` | admins | Message every registered user |
 | `/disable_model` `/enable_model` | admins | Runtime kill switch for a model in the fallback chain |
@@ -43,7 +39,8 @@ Beyond text the bot accepts **photos** (a meal in Nutrition, a code screenshot i
 `src/llm.py` is built for good answers that arrive fast, even on shared free-tier keys:
 
 - **Adaptive prompts.** Each mode's system prompt pushes the model to match format to the question and to skip filler, instead of always emitting tables and headings.
-- **Quality-first model order.** Strong, fast "flash" models lead the chain; cheaper "lite" and older tiers, a `-latest` alias, and finally the heavier "pro" model follow as fallbacks.
+- **Speed-first model order.** The chain leads with a fast, high-quality model (gemini-2.5-flash, ~1s); slower or spikier preview/pro models sit lower as fallbacks.
+- **Short-term memory.** The bot keeps recent conversation within a token budget, so it follows context across turns without bloating the prompt — frugal on free-tier quotas.
 - **Thinking control.** Newer Gemini flash models reason internally before answering, which adds several seconds and burns quota on a trivial question. Fast modes send `thinkingBudget=0` (roughly 4-5x faster, no quality loss for chat); Math keeps thinking on for step-by-step correctness.
 - **Layered fallback.** Direct Gemini API with API-key rotation and per-key cooldown on rate limits, then OpenRouter (free community models first) so a request can still succeed at a zero balance.
 - **Truncation guard.** A response that looks cut off (unbalanced code fences, dangling table rows, a sentence ending mid-word) is rejected and the next model is tried.
@@ -167,15 +164,11 @@ Persistence caveat: the free tier has an ephemeral filesystem and no persistent 
 |---|---|---|
 | `/start` | все | Регистрация и клавиатура выбора режима |
 | `/mode` | все | Переключение между режимами |
-| `/today` | все | Итоги по калориям/БЖУ за сегодня |
 | `/week` | все | Питание за 7 дней со средним за день |
 | `/settings` | все | Длина ответов, креативность, язык |
 | `/stats` | все | Ваша активность: запросы, блюда, задержка, дата регистрации, последняя активность |
-| `/undo` | все | Удалить последний обмен сообщениями |
-| `/export` | все | Выгрузить историю переписки в файл |
-| `/clear` | все | Очистить историю переписки |
+| `/clear` | все | Очистить историю и начать заново |
 | `/feedback <текст>` | все | Отправить отзыв или идею (сохраняется и пересылается админам) |
-| `/id` | все | Показать ваш Telegram ID (для `ADMIN_IDS`) |
 | `/admin` | админы | Панель: рост, активные пользователи, задержка, пул ключей, топ, отзывы, экспорт CSV |
 | `/broadcast <текст>` | админы | Рассылка всем зарегистрированным пользователям |
 | `/disable_model` `/enable_model` | админы | Runtime-выключатель модели в цепочке фоллбеков |
@@ -185,7 +178,8 @@ Persistence caveat: the free tier has an ephemeral filesystem and no persistent 
 `src/llm.py` сделан так, чтобы ответы были хорошими и быстрыми даже на общих бесплатных ключах:
 
 - **Адаптивные промпты.** Системный промпт каждого режима требует подбирать формат под вопрос и не лить воду, а не всегда выдавать таблицы и заголовки.
-- **Порядок моделей по качеству.** Цепочку возглавляют сильные и быстрые модели класса flash; за ними идут более дешёвые lite, старые версии, алиас `-latest` и, наконец, тяжёлая pro как запас.
+- **Порядок моделей по скорости.** Цепочку возглавляет быстрая и качественная модель (gemini-2.5-flash, ~1с); более медленные preview/pro стоят ниже как запас.
+- **Короткая память.** Бот держит недавнюю переписку в пределах токен-бюджета — следит за контекстом между сообщениями, не раздувая запрос (экономно для бесплатных лимитов).
 - **Управление размышлением.** Новые модели Gemini flash «думают» перед ответом, что добавляет несколько секунд и тратит квоту даже на пустяк. Быстрые режимы отправляют `thinkingBudget=0` (примерно в 4-5 раз быстрее, без потери качества для общения); в режиме Математика размышление остаётся для пошаговой корректности.
 - **Многоуровневые фоллбеки.** Прямой Gemini API с ротацией ключей и паузой ключа при лимите, затем OpenRouter (сначала бесплатные модели) — запрос проходит даже при нулевом балансе.
 - **Защита от обрыва.** Ответ с признаками обрезки (незакрытые блоки кода, оборванные таблицы, фраза на полуслове) отклоняется, и пробуется следующая модель.

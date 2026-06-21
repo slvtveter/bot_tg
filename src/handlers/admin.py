@@ -66,8 +66,6 @@ async def get_admin_dashboard_data() -> tuple[str, InlineKeyboardMarkup]:
     active_keys = len(key_pool.get_active_keys())
     cooldown_keys = total_keys - active_keys
 
-    disabled_text = ", ".join(sorted(disabled_models)) if disabled_models else "нет"
-
     text = (
         "👑 <b>Панель администратора</b>\n\n"
         "👥 <b>Пользователи</b>\n"
@@ -88,10 +86,17 @@ async def get_admin_dashboard_data() -> tuple[str, InlineKeyboardMarkup]:
         f"файл: <code>{os.path.basename(DB_PATH)}</code>\n\n"
         "🔑 <b>API ключи (Gemini Pool)</b>\n"
         f"• Всего: <code>{total_keys}</code> · активно: <code>{active_keys}</code> · "
-        f"cooldown: <code>{cooldown_keys}</code>\n\n"
-        f"🚫 <b>Отключённые модели:</b> <code>{html.escape(disabled_text)}</code>\n"
-        f"<i>Управление: /disable_model &lt;id&gt; и /enable_model &lt;id&gt;</i>"
+        f"cooldown: <code>{cooldown_keys}</code>"
     )
+
+    # Only surface the model kill switch when something is actually disabled,
+    # so the panel stays uncluttered the rest of the time.
+    if disabled_models:
+        disabled_text = ", ".join(sorted(disabled_models))
+        text += (
+            f"\n\n🚫 <b>Отключённые модели:</b> <code>{html.escape(disabled_text)}</code>\n"
+            f"<i>Включить обратно: /enable_model &lt;id&gt;</i>"
+        )
 
     keyboard = [
         [
@@ -117,11 +122,6 @@ async def get_admin_dashboard_data() -> tuple[str, InlineKeyboardMarkup]:
                 callback_data="admin_logs_cleanup",
             ),
         ],
-        [
-            InlineKeyboardButton(
-                "⚡ Сжать БД (VACUUM)", callback_data="admin_db_optimize"
-            ),
-        ],
     ]
     return text, InlineKeyboardMarkup(keyboard)
 
@@ -142,31 +142,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await query.answer()
     data = query.data
 
-    if data == "admin_db_optimize":
-        start_time = time.time()
-        try:
-            async with get_db_connection() as db:
-                await db.execute("VACUUM;")
-                await db.commit()
-            elapsed = time.time() - start_time
-            db_size_kb = os.path.getsize(DB_PATH) / 1024.0
-
-            # Refresh dashboard
-            text, reply_markup = await get_admin_dashboard_data()
-            opt_msg = (
-                f"\n\n✅ <b>БД успешно оптимизирована!</b> (VACUUM за {elapsed:.2f}с).\n"
-                f"Новый размер: <code>{db_size_kb:.2f} KB</code>"
-            )
-            await query.edit_message_text(
-                text=text + opt_msg,
-                reply_markup=reply_markup,
-                parse_mode="HTML",
-            )
-        except Exception as e:
-            logger.error(f"Error running VACUUM: {e}")
-            await query.message.reply_text(f"❌ Ошибка при оптимизации БД: {e}")
-
-    elif data == "admin_logs_cleanup":
+    if data == "admin_logs_cleanup":
         # Trims only old chat *context* (messages). Statistics, users, the
         # nutrition log and feedback are deliberately never deleted, so lifetime
         # metrics stay accurate forever.

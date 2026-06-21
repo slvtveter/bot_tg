@@ -1,5 +1,4 @@
 import html
-import io
 
 from telegram import (
     InlineKeyboardButton,
@@ -13,9 +12,6 @@ from src import config
 from src.database import (
     add_feedback,
     clear_chat_history,
-    delete_last_exchange,
-    get_all_chat_history,
-    get_today_nutrition_totals,
     get_usage_stats,
     get_user_activity_summary,
     get_week_nutrition_totals,
@@ -91,74 +87,9 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     await clear_chat_history(user.id)
-    await update.message.reply_html("История сообщений очищена. 🧹")
-
-
-async def undo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Deletes the last user/assistant exchange from the chat history.
-    """
-    user = update.effective_user
-    if not user or not update.message:
-        return
-
-    deleted = await delete_last_exchange(user.id)
-    if deleted:
-        await update.message.reply_html("Последний обмен сообщениями удалён из истории.")
-    else:
-        await update.message.reply_html("История пуста, нечего отменять.")
-
-
-async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Sends the user's full chat history as a downloadable plain-text file.
-    """
-    user = update.effective_user
-    if not user or not update.message:
-        return
-
-    history = await get_all_chat_history(user.id)
-    if not history:
-        await update.message.reply_html("История пуста, нечего экспортировать.")
-        return
-
-    role_labels = {"user": "Пользователь", "assistant": "Ассистент", "system": "Система"}
-    lines = []
-    for msg in history:
-        label = role_labels.get(msg["role"], msg["role"])
-        lines.append(f"[{msg['timestamp']}] {label}: {msg['content']}")
-    file_content = "\n\n".join(lines).encode("utf-8")
-
-    await update.message.reply_document(
-        document=io.BytesIO(file_content),
-        filename=f"chat_history_{user.id}.txt",
-        caption=f"Экспорт истории сообщений ({len(history)} записей).",
+    await update.message.reply_html(
+        "История очищена — начинаем с чистого листа. 🧹"
     )
-
-
-async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Shows the sum of calories/protein/fat/carbs logged today via the nutrition agent.
-    """
-    user = update.effective_user
-    if not user or not update.message:
-        return
-
-    totals = await get_today_nutrition_totals(user.id)
-    if totals["entries"] == 0:
-        await update.message.reply_html(
-            "Сегодня вы ещё не отправляли блюда на анализ в режиме 🍏 Питание."
-        )
-        return
-
-    response = (
-        f"📅 <b>Итоги питания за сегодня</b> ({totals['entries']} приём(а/ов) пищи):\n\n"
-        f"• Калории: <code>{totals['calories']:.0f}</code> ккал\n"
-        f"• Белки: <code>{totals['protein']:.1f}</code> г\n"
-        f"• Жиры: <code>{totals['fat']:.1f}</code> г\n"
-        f"• Углеводы: <code>{totals['carbs']:.1f}</code> г\n"
-    )
-    await update.message.reply_html(response)
 
 
 async def week_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -307,26 +238,6 @@ async def feedback_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await update.message.reply_html("Спасибо! Ваш отзыв сохранён. 🙏")
 
 
-async def id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Replies with the user's Telegram ID (and chat ID in groups) so they can put
-    it in ADMIN_IDS to unlock the admin panel.
-    """
-    user = update.effective_user
-    if not user or not update.message:
-        return
-
-    text = f"🆔 Ваш Telegram ID: <code>{user.id}</code>\n"
-    chat = update.effective_chat
-    if chat and chat.id != user.id:
-        text += f"ID этого чата: <code>{chat.id}</code>\n"
-    text += (
-        "\nЧтобы открыть панель администратора, добавьте ваш ID в переменную "
-        "окружения <code>ADMIN_IDS</code> и перезапустите бота."
-    )
-    await update.message.reply_html(text)
-
-
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Displays compact help: modes, how to use, and the command list.
@@ -347,15 +258,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "режиме Код) и голосовые — они распознаются автоматически.\n\n"
         "<b>Команды</b>\n"
         "/mode — выбрать режим\n"
-        "/today — итоги питания за сегодня\n"
         "/week — итоги питания за 7 дней\n"
         "/settings — длина ответов, креативность, язык\n"
         "/stats — ваша статистика\n"
-        "/undo — отменить последний обмен сообщениями\n"
-        "/export — выгрузить историю в файл\n"
-        "/clear — очистить историю\n"
-        "/feedback — отправить отзыв или идею\n"
-        "/id — узнать ваш Telegram ID\n\n"
+        "/clear — очистить историю и начать заново\n"
+        "/feedback — отправить отзыв или идею\n\n"
         "<b>Группы</b>: добавьте бота в чат и обращайтесь через @упоминание или "
         "ответом на его сообщение."
     )

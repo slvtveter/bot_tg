@@ -63,19 +63,21 @@ async def process_text_message(
     routes it through the Orchestrator for the user's current mode, logs the
     reply and usage stats, and sends the response back to Telegram.
     """
-    # 1. Log the user's message first
-    await log_message(user_id=user_id, role="user", content=text)
-
-    # 2. Query user's current mode
+    # 1. Query user's current mode
     mode = await get_user_mode(user_id=user_id)
 
-    # 3. Retrieve recent history (including the logged user message)
-    history = await get_chat_history(user_id=user_id, limit=15)
+    # 2. Retrieve recent history BEFORE logging the new message, so the model
+    # gets the prior turns as context and the current message isn't duplicated
+    # (the agent appends it once). The history is token-trimmed inside ask_llm.
+    history = await get_chat_history(user_id=user_id, limit=20)
 
-    # 3.5. Retrieve settings
+    # 3. Retrieve settings
     settings = await get_user_settings(user_id=user_id)
 
-    # 4. Query Orchestrator (returns the answer plus real LLM telemetry)
+    # 4. Log the user's message now that prior history has been captured
+    await log_message(user_id=user_id, role="user", content=text)
+
+    # 5. Query Orchestrator (returns the answer plus real LLM telemetry)
     response_text, model_name, prompt_tokens, completion_tokens, latency = (
         await orchestrator.route_and_process(
             mode=mode,

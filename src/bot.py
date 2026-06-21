@@ -20,10 +20,8 @@ from src.handlers import (
     clear_command,
     disable_model_command,
     enable_model_command,
-    export_command,
     feedback_command,
     help_command,
-    id_command,
     inline_query_handler,
     message_handler,
     mode_callback,
@@ -33,8 +31,6 @@ from src.handlers import (
     settings_command,
     start_command,
     stats_command,
-    today_command,
-    undo_command,
     voice_handler,
     week_command,
 )
@@ -79,15 +75,11 @@ async def post_init(application) -> None:
     commands = [
         BotCommand("start", "Перезапустить бота / Начать"),
         BotCommand("mode", "Выбрать режим работы"),
-        BotCommand("today", "Итоги питания за сегодня"),
         BotCommand("week", "Итоги питания за 7 дней"),
         BotCommand("settings", "Настройки параметров ИИ"),
         BotCommand("stats", "Показать статистику использования"),
-        BotCommand("undo", "Отменить последний обмен сообщениями"),
-        BotCommand("export", "Экспортировать историю сообщений в файл"),
-        BotCommand("clear", "Очистить историю сообщений"),
+        BotCommand("clear", "Очистить историю и начать заново"),
         BotCommand("feedback", "Отправить отзыв или идею"),
-        BotCommand("id", "Узнать свой Telegram ID"),
         BotCommand("admin", "Панель администратора (доступно админам)"),
         BotCommand("help", "Справка и FAQ"),
     ]
@@ -130,15 +122,11 @@ def main():
     # Register Command Handlers
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("clear", clear_command))
-    app.add_handler(CommandHandler("undo", undo_command))
-    app.add_handler(CommandHandler("export", export_command))
-    app.add_handler(CommandHandler("today", today_command))
     app.add_handler(CommandHandler("week", week_command))
     app.add_handler(CommandHandler("mode", mode_command))
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("settings", settings_command))
     app.add_handler(CommandHandler("feedback", feedback_command))
-    app.add_handler(CommandHandler("id", id_command))
     app.add_handler(CommandHandler("admin", admin_command))
     app.add_handler(CommandHandler("broadcast", broadcast_command))
     app.add_handler(CommandHandler("disable_model", disable_model_command))
