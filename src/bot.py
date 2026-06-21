@@ -172,10 +172,15 @@ def main():
             port=config.PORT,
             url_path=webhook_path,
             webhook_url=f"{config.WEBHOOK_URL}/{webhook_path}",
+            # Drop any updates Telegram queued while the service was down or
+            # restarting. Without this, a backlog of old button taps from every
+            # user gets replayed on startup, making the bot appear to switch
+            # modes "by itself" and spam every user with "mode changed".
+            drop_pending_updates=True,
         )
     else:
         logger.info("Starting Telegram Bot in polling mode...")
-        app.run_polling()
+        app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
