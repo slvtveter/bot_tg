@@ -34,3 +34,19 @@ ADMIN_IDS = [int(x.strip()) for x in raw_admin_ids.split(",") if x.strip().isdig
 # polling is simpler and doesn't require a public HTTPS endpoint.
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").rstrip("/")
 PORT = int(os.getenv("PORT", "8443"))
+
+# Keep-alive: free hosting (e.g. Render's free tier) spins a web service down
+# after ~15 min without inbound requests. In webhook mode the bot pings its own
+# WEBHOOK_URL every KEEPALIVE_MINUTES (must be < 15) so it stays awake and the
+# in-memory state / ephemeral SQLite file isn't lost to a sleep-restart. Set to
+# 0 to disable. Has no effect in polling mode (no public URL to ping).
+KEEPALIVE_MINUTES = int(os.getenv("KEEPALIVE_MINUTES", "10"))
+
+# Turso (libSQL) durable backend. On free hosting with an ephemeral filesystem
+# (no persistent disk), the local SQLite file is wiped on every redeploy. Set
+# TURSO_DATABASE_URL (and TURSO_AUTH_TOKEN) to a free Turso database and all
+# data is stored remotely instead, surviving redeploys forever. Left empty, the
+# bot uses the local SQLite file as before.
+TURSO_DATABASE_URL = os.getenv("TURSO_DATABASE_URL", "").strip()
+TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "").strip()
+USE_TURSO = bool(TURSO_DATABASE_URL)

@@ -10,14 +10,23 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from src import config
-from src.database import DB_PATH, get_all_user_ids, get_db_connection
+from src.database import (
+    DB_PATH,
+    get_admin_overview,
+    get_all_user_ids,
+    get_db_connection,
+    get_recent_feedback,
+)
 from src.llm import disabled_models, key_pool
 
 logger = logging.getLogger(__name__)
 
 
 def _is_admin(user_id: int) -> bool:
-    return not config.ADMIN_IDS or user_id in config.ADMIN_IDS
+    # Fail closed: admin features require an explicit ADMIN_IDS allowlist. If it
+    # is empty, nobody is an admin (rather than everybody) - so the panel is
+    # never accidentally exposed to all users.
+    return user_id in config.ADMIN_IDS
 
 
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -28,11 +37,10 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not user or not update.message:
         return
 
-    # Authorization Check
-    # If ADMIN_IDS is defined, restrict access. If empty, allow for development.
-    if config.ADMIN_IDS and user.id not in config.ADMIN_IDS:
+    # Authorization check (fail closed - only ADMIN_IDS may enter).
+    if not _is_admin(user.id):
         await update.message.reply_html(
-            "⛔ <b>Доступ запрещен:</b> Вы не являетесь администратором бота."
+            "⛔ <b>Доступ запрещён:</b> вы не являетесь администратором бота."
         )
         return
 
@@ -42,46 +50,11 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def get_admin_dashboard_data() -> tuple[str, InlineKeyboardMarkup]:
     """
-    Queries database and constructs the admin dashboard text and keyboard.
+    Queries the database and constructs the admin dashboard text and keyboard.
+    All counts are lifetime/permanent (users, stats, nutrition_log and feedback
+    are never auto-pruned), so growth can be tracked over the whole lifetime.
     """
-    total_users = 0
-    active_today = 0
-    requests_hour = 0
-    avg_latency = 0.0
-
-    try:
-        async with get_db_connection() as db:
-            # Total registered users
-            async with db.execute("SELECT COUNT(*) FROM users") as cursor:
-                row = await cursor.fetchone()
-                if row:
-                    total_users = row[0]
-
-            # Active users in the last 24 hours
-            async with db.execute(
-                "SELECT COUNT(DISTINCT user_id) FROM stats WHERE timestamp >= datetime('now', '-24 hours')"
-            ) as cursor:
-                row = await cursor.fetchone()
-                if row:
-                    active_today = row[0]
-
-            # Requests in last hour
-            async with db.execute(
-                "SELECT COUNT(*) FROM stats WHERE timestamp >= datetime('now', '-1 hour')"
-            ) as cursor:
-                row = await cursor.fetchone()
-                if row:
-                    requests_hour = row[0]
-
-            # Average latency in last hour
-            async with db.execute(
-                "SELECT AVG(latency) FROM stats WHERE timestamp >= datetime('now', '-1 hour')"
-            ) as cursor:
-                row = await cursor.fetchone()
-                if row and row[0] is not None:
-                    avg_latency = row[0]
-    except Exception as e:
-        logger.error(f"Error querying admin stats: {e}")
+    overview = await get_admin_overview()
 
     # Database file size
     db_size_kb = 0.0
@@ -96,20 +69,26 @@ async def get_admin_dashboard_data() -> tuple[str, InlineKeyboardMarkup]:
     disabled_text = ", ".join(sorted(disabled_models)) if disabled_models else "нет"
 
     text = (
-        "👑 <b>Панель управления администратора</b>\n\n"
-        f"👥 <b>Пользователи:</b>\n"
-        f"• Всего зарегистрировано: <code>{total_users}</code>\n"
-        f"• Активных за 24 часа: <code>{active_today}</code>\n\n"
-        f"📈 <b>Нагрузка & Производительность:</b>\n"
-        f"• Запросов за последний час: <code>{requests_hour}</code>\n"
-        f"• Среднее время ответа (1ч): <code>{avg_latency:.2f} сек</code>\n\n"
-        f"🗄 <b>База данных:</b>\n"
-        f"• Размер файла: <code>{db_size_kb:.2f} KB</code>\n"
-        f"• Путь: <code>{os.path.basename(DB_PATH)}</code>\n\n"
-        f"🔑 <b>API Ключи (Gemini Pool):</b>\n"
-        f"• Всего ключей: <code>{total_keys}</code>\n"
-        f"• Активно: <code>{active_keys}</code>\n"
-        f"• В режиме ожидания (cooldown): <code>{cooldown_keys}</code>\n\n"
+        "👑 <b>Панель администратора</b>\n\n"
+        "👥 <b>Пользователи</b>\n"
+        f"• Всего: <code>{overview['total_users']}</code>\n"
+        f"• Новых сегодня: <code>{overview['new_today']}</code> · "
+        f"за 7 дней: <code>{overview['new_7d']}</code>\n"
+        f"• Активных за 24ч: <code>{overview['active_24h']}</code> · "
+        f"за 7 дней: <code>{overview['active_7d']}</code>\n\n"
+        "📈 <b>Запросы</b> <i>(история сохраняется навсегда)</i>\n"
+        f"• Всего обработано: <code>{overview['total_requests']}</code>\n"
+        f"• Сегодня: <code>{overview['requests_today']}</code> · "
+        f"за час: <code>{overview['requests_hour']}</code>\n"
+        f"• Средняя задержка (1ч): <code>{overview['avg_latency_hour']:.2f} сек</code>\n\n"
+        "🍽 <b>Питание</b>\n"
+        f"• Проанализировано блюд: <code>{overview['total_meals']}</code>\n\n"
+        "🗄 <b>База данных</b>\n"
+        f"• Размер: <code>{db_size_kb:.2f} KB</code> · "
+        f"файл: <code>{os.path.basename(DB_PATH)}</code>\n\n"
+        "🔑 <b>API ключи (Gemini Pool)</b>\n"
+        f"• Всего: <code>{total_keys}</code> · активно: <code>{active_keys}</code> · "
+        f"cooldown: <code>{cooldown_keys}</code>\n\n"
         f"🚫 <b>Отключённые модели:</b> <code>{html.escape(disabled_text)}</code>\n"
         f"<i>Управление: /disable_model &lt;id&gt; и /enable_model &lt;id&gt;</i>"
     )
@@ -117,27 +96,30 @@ async def get_admin_dashboard_data() -> tuple[str, InlineKeyboardMarkup]:
     keyboard = [
         [
             InlineKeyboardButton(
-                "🧹 Очистить старые логи (>30 дн)", callback_data="admin_logs_cleanup"
+                f"📨 Отзывы ({overview['feedback_count']})",
+                callback_data="admin_feedback",
             ),
-        ],
-        [
-            InlineKeyboardButton(
-                "⚡ Сжать БД (VACUUM)", callback_data="admin_db_optimize"
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "🔑 Статус API ключей", callback_data="admin_keys_status"
-            ),
-        ],
-        [
             InlineKeyboardButton(
                 "🏆 Топ пользователей", callback_data="admin_top_users"
             ),
         ],
         [
             InlineKeyboardButton(
+                "🔑 Статус API ключей", callback_data="admin_keys_status"
+            ),
+            InlineKeyboardButton(
                 "📁 Экспорт stats в CSV", callback_data="admin_export_csv"
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "🧹 Очистить историю чатов (>90 дн)",
+                callback_data="admin_logs_cleanup",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "⚡ Сжать БД (VACUUM)", callback_data="admin_db_optimize"
             ),
         ],
     ]
@@ -153,8 +135,8 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     user_id = query.from_user.id
-    if config.ADMIN_IDS and user_id not in config.ADMIN_IDS:
-        await query.answer("⛔ Доступ запрещен.", show_alert=True)
+    if not _is_admin(user_id):
+        await query.answer("⛔ Доступ запрещён.", show_alert=True)
         return
 
     await query.answer()
@@ -185,23 +167,22 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await query.message.reply_text(f"❌ Ошибка при оптимизации БД: {e}")
 
     elif data == "admin_logs_cleanup":
+        # Trims only old chat *context* (messages). Statistics, users, the
+        # nutrition log and feedback are deliberately never deleted, so lifetime
+        # metrics stay accurate forever.
         try:
             async with get_db_connection() as db:
                 cursor = await db.execute(
-                    "DELETE FROM messages WHERE timestamp < datetime('now', '-30 days');"
+                    "DELETE FROM messages WHERE timestamp < datetime('now', '-90 days');"
                 )
                 deleted_messages = cursor.rowcount
-                cursor2 = await db.execute(
-                    "DELETE FROM stats WHERE timestamp < datetime('now', '-30 days');"
-                )
-                deleted_stats = cursor2.rowcount
                 await db.commit()
 
             text, reply_markup = await get_admin_dashboard_data()
             cleanup_msg = (
-                f"\n\n✅ <b>Очистка завершена!</b>\n"
+                f"\n\n✅ <b>История чатов очищена</b> (старше 90 дней).\n"
                 f"Удалено сообщений: <code>{deleted_messages}</code>\n"
-                f"Удалено логов статистики: <code>{deleted_stats}</code>"
+                f"<i>Статистика и пользователи сохранены полностью.</i>"
             )
             await query.edit_message_text(
                 text=text + cleanup_msg,
@@ -209,8 +190,8 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 parse_mode="HTML",
             )
         except Exception as e:
-            logger.error(f"Error during logs cleanup: {e}")
-            await query.message.reply_text(f"❌ Ошибка при очистке логов: {e}")
+            logger.error(f"Error during chat history cleanup: {e}")
+            await query.message.reply_text(f"❌ Ошибка при очистке истории: {e}")
 
     elif data == "admin_keys_status":
         now = time.time()
@@ -302,6 +283,30 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         except Exception as e:
             logger.error(f"Error exporting stats CSV: {e}")
             await query.message.reply_text(f"❌ Ошибка при экспорте: {e}")
+
+    elif data == "admin_feedback":
+        feedback = await get_recent_feedback(limit=10)
+        if not feedback:
+            fb_text = "📨 <b>Отзывы пользователей</b>\n\nПока нет отзывов."
+        else:
+            lines = ["📨 <b>Последние отзывы пользователей:</b>\n"]
+            for fb in feedback:
+                ts = (fb["timestamp"] or "").split(" ")[0]
+                uname = (
+                    html.escape(fb["username"])
+                    if fb["username"]
+                    else f"id{fb['user_id']}"
+                )
+                content = html.escape((fb["content"] or "")[:300])
+                lines.append(f"• <i>{ts}</i> <b>{uname}</b>: {content}")
+            fb_text = "\n".join(lines)
+
+        text, reply_markup = await get_admin_dashboard_data()
+        await query.edit_message_text(
+            text=text + f"\n\n{fb_text}",
+            reply_markup=reply_markup,
+            parse_mode="HTML",
+        )
 
 
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

@@ -94,6 +94,26 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 if caption
                 else "Реши математическую задачу на этом изображении пошагово."
             )
+        elif mode == "fitness":
+            base = (
+                "На фото может быть тренажёр, упражнение или человек в движении. "
+                "Определи, что это, разбери технику или назначение и дай практичный "
+                "совет тренера."
+            )
+            vision_prompt = f"{base} Запрос пользователя: {caption}" if caption else base
+        elif mode == "writing":
+            base = (
+                "На фото, скорее всего, текст. Распознай его и помоги по запросу "
+                "(переписать, исправить, сократить, перевести). Если запроса нет — "
+                "аккуратно распознай текст и приведи его."
+            )
+            vision_prompt = f"{base} Запрос пользователя: {caption}" if caption else base
+        elif mode == "code":
+            base = (
+                "На фото код или сообщение об ошибке. Распознай его, объясни проблему "
+                "и предложи исправление с корректным кодом."
+            )
+            vision_prompt = f"{base} Запрос пользователя: {caption}" if caption else base
         else:  # general mode
             vision_prompt = (
                 f"Ответь на запрос касательно этого изображения: {caption}"

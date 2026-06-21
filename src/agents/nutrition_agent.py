@@ -1,29 +1,19 @@
-from src.agents.base import BaseAgent
+from typing import Dict, List, Optional
+
+from src.agents.base import AgentResult
+from src.agents.generic_agent import GenericAgent
 from src.database import log_nutrition_entry
 from src.llm import ask_llm
 from src.utils import extract_nutrition_totals
-from typing import List, Dict, Optional
 
 
-class NutritionAgent(BaseAgent):
-    def __init__(self):
-        super().__init__(
-            name="Nutrition",
-            system_prompt=(
-                "Ты — квалифицированный нутрициолог и эксперт по питанию. "
-                "Описывай состав, пользу, вред и калорийность блюд. "
-                "ОБЯЗАТЕЛЬНО используй правильный Markdown-формат в ответах. "
-                "Для таблиц КБЖУ всегда используй СТРОГИЙ формат markdown-таблиц: "
-                "каждая строка таблицы должна начинаться и заканчиваться символом '|', "
-                "и обязательно должна содержать строку-разделитель '|---|---|' после строки заголовка. "
-                "Пример таблицы:\n"
-                "| Продукт | Калории | Белки | Жиры | Углеводы |\n"
-                "|:---|---|---|---|---|\n"
-                "| Яблоко | 52 | 0.3 | 0.2 | 13.8 |\n\n"
-                "Используй заголовки (## Заголовок), **жирный текст** для ключевых данных, "
-                "маркированные списки (- пункт). Давай полезные рекомендации по питанию."
-            )
-        )
+class NutritionAgent(GenericAgent):
+    """
+    Nutrition mode behaves like a generic agent but, when the model has
+    actually analysed a meal, it parses the trailing [NUTRITION_DATA] marker,
+    strips it from the user-visible text and logs the macros so /today and
+    /week can report daily/weekly totals.
+    """
 
     async def process(
         self,
@@ -31,19 +21,21 @@ class NutritionAgent(BaseAgent):
         history: List[Dict[str, str]],
         user_settings: Optional[Dict[str, str]] = None,
         user_id: Optional[int] = None,
-    ) -> str:
-        # Add the current user input to history for the LLM
+    ) -> AgentResult:
         current_history = history + [{"role": "user", "content": user_input}]
-
-        response, _, _, _, _ = await ask_llm(
+        text, model, prompt_tokens, completion_tokens, latency = await ask_llm(
             mode="nutrition",
             history=current_history,
-            user_settings=user_settings
+            user_settings=user_settings,
         )
-        if not response:
-            return "Извините, я не смог получить ответ."
+        prompt_tokens = prompt_tokens or 0
+        completion_tokens = completion_tokens or 0
+        latency = latency or 0.0
 
-        cleaned_text, totals = extract_nutrition_totals(response)
+        if not text:
+            return (None, model, prompt_tokens, completion_tokens, latency)
+
+        cleaned_text, totals = extract_nutrition_totals(text)
         if totals and user_id is not None:
             await log_nutrition_entry(
                 user_id=user_id,
@@ -52,4 +44,4 @@ class NutritionAgent(BaseAgent):
                 fat=totals["fat"],
                 carbs=totals["carbs"],
             )
-        return cleaned_text
+        return (cleaned_text, model, prompt_tokens, completion_tokens, latency)

@@ -2,78 +2,92 @@
 
 *[Русская версия](README.ru.md) — или прокрутите вниз / scroll down*
 
-A modular Telegram bot platform that routes user requests to specialized AI agents instead of a single general-purpose assistant. It started as a straightforward nutrition-tracking bot and was rebuilt into a small agent-based framework so new capabilities can be added without touching the core dispatch logic.
+A modular Telegram bot that routes each message to a specialized AI agent instead of one generic assistant. It began as a nutrition tracker and grew into a small agent framework where adding a new mode costs a single registry entry plus a system prompt.
 
-## What it does
+## Modes
 
-The bot currently ships with three modes, switchable per user from a persistent keyboard or the `/mode` command:
+Switchable per user from the bottom keyboard or the `/mode` command:
 
-- **General** — a structured, markdown-formatted conversational assistant.
-- **Nutrition** — analyzes meals (by text description or photo), estimates calories/protein/fat/carbs, and gives practical dietary feedback. Daily totals are tracked automatically and available via `/today`.
-- **Math** — walks through problems step by step, with all formulas rendered as proper LaTeX rather than plain text.
+- **General** — a smart, to-the-point assistant for any question.
+- **Nutrition** — estimates calories and macros from a photo or a text description, answers food/diet questions, and logs daily and weekly totals (`/today`, `/week`).
+- **Math** — solves problems step by step, with formulas rendered as proper LaTeX.
+- **Fitness** — a personal trainer: workout programs, exercise technique, home and gym alternatives.
+- **Writing** — emails, posts, resumes, rewrites, summaries, and translations, returned ready to copy.
+- **Code** — a senior engineer: correct, idiomatic code with a short explanation.
 
-Each mode has its own system prompt and response-formatting rules, but they all share the same infrastructure underneath: chat history, per-user settings, and the LLM client.
+The defining behavior across all modes is **adaptive formatting**: the bot answers a simple question in a sentence or two and only reaches for tables, headings, or lists when they genuinely make the answer clearer — no report-style table for every reply.
 
-Beyond text and photos, the bot also accepts **voice messages** (transcribed via Gemini's native audio understanding before being routed through the same pipeline as typed text) and can be added to **group chats**, where it only responds when @mentioned or replied to, so it doesn't talk over every message in the group.
+Beyond text the bot accepts **photos** (a meal in Nutrition, a code screenshot in Code, an exercise in Fitness, and so on) and **voice messages** (transcribed via Gemini's native audio understanding, then handled exactly like typed text). It can also join **group chats**, where it only responds when @mentioned or replied to.
 
-### Commands
+## Commands
 
 | Command | Who | Description |
 |---|---|---|
 | `/start` | everyone | Register and show the mode keyboard |
-| `/mode` | everyone | Switch between General / Nutrition / Math |
-| `/today` | everyone | Today's calorie/macro totals from the Nutrition agent |
+| `/mode` | everyone | Switch between modes |
+| `/today` | everyone | Today's calorie/macro totals |
+| `/week` | everyone | Last 7 days of nutrition, with a daily average |
 | `/settings` | everyone | Response length, creativity, language |
-| `/stats` | everyone | Your own activity stats (messages, meals analyzed, latency) |
+| `/stats` | everyone | Your activity: requests, meals, latency, join date, last seen |
 | `/undo` | everyone | Remove the last exchange from history |
 | `/export` | everyone | Download your chat history as a file |
 | `/clear` | everyone | Wipe your chat history |
-| `/admin` | admins | Dashboard: active users, latency, API key pool, top users, CSV export |
+| `/feedback <text>` | everyone | Send feedback or an idea (stored and forwarded to admins) |
+| `/id` | everyone | Show your Telegram ID (to put in `ADMIN_IDS`) |
+| `/admin` | admins | Dashboard: growth, active users, latency, key pool, top users, feedback, CSV export |
 | `/broadcast <text>` | admins | Message every registered user |
 | `/disable_model` `/enable_model` | admins | Runtime kill switch for a model in the fallback chain |
+
+## How it answers: quality and speed
+
+`src/llm.py` is built for good answers that arrive fast, even on shared free-tier keys:
+
+- **Adaptive prompts.** Each mode's system prompt pushes the model to match format to the question and to skip filler, instead of always emitting tables and headings.
+- **Quality-first model order.** Strong, fast "flash" models lead the chain; cheaper "lite" and older tiers, a `-latest` alias, and finally the heavier "pro" model follow as fallbacks.
+- **Thinking control.** Newer Gemini flash models reason internally before answering, which adds several seconds and burns quota on a trivial question. Fast modes send `thinkingBudget=0` (roughly 4-5x faster, no quality loss for chat); Math keeps thinking on for step-by-step correctness.
+- **Layered fallback.** Direct Gemini API with API-key rotation and per-key cooldown on rate limits, then OpenRouter (free community models first) so a request can still succeed at a zero balance.
+- **Truncation guard.** A response that looks cut off (unbalanced code fences, dangling table rows, a sentence ending mid-word) is rejected and the next model is tried.
+
+Delivery (`src/sender.py`) tries Telegram's rich-message API first, then HTML built by a hand-rolled Markdown/LaTeX converter (`src/utils.py`), then plain text.
+
+## Statistics that are never wiped
+
+Tracking growth is a first-class goal, so usage data is permanent. The `users`, `stats`, `nutrition_log`, and `feedback` tables are **never auto-deleted** — lifetime totals stay accurate for as long as the bot runs. Per-request telemetry (model, tokens, latency) is real for every channel, including text.
+
+- `/stats` gives each user their own lifetime activity.
+- `/admin` shows the whole picture: total users, new today and over 7 days, active in the last 24h and 7 days, all-time and recent request volume, average latency, meals analyzed, and recent feedback.
+- The only cleanup action trims **chat history** older than 90 days (message context only); it never touches statistics or users.
 
 ## Architecture
 
 ```
 Telegram update
       |
-src/handlers/        -> Telegram-specific glue (commands, callbacks, message routing)
+src/handlers/        Telegram glue (commands, callbacks, messages, photo, voice, inline)
       |
-src/orchestrator.py   -> picks the agent for the user's current mode
+src/orchestrator.py  Picks the agent for the user's current mode
       |
-src/agents/           -> mode-specific prompt + behavior (NutritionAgent, MathAgent, ...)
+src/agents/          GenericAgent per mode (+ NutritionAgent for macro logging)
       |
-src/llm.py             -> provider-agnostic LLM client
+src/llm.py           Gemini + OpenRouter client: key rotation, fallback, thinking control
       |
-src/sender.py          -> formats and sends the reply back to Telegram
+src/sender.py        Formats and sends the reply back to Telegram
 ```
 
-`src/database.py` sits alongside this flow, persisting chat history, per-user settings, daily nutrition totals, and usage statistics in SQLite (via `aiosqlite`, with WAL mode enabled for concurrent access).
-
-### LLM resilience
-
-Reliability was the main design constraint here, not raw model quality — free-tier API quotas run out fast, especially when several projects share the same keys. `src/llm.py` handles this with a layered fallback chain:
-
-1. **Direct Gemini API**, trying a list of models ordered from highest remaining daily quota to lowest, with API keys rotated and put on a cooldown when they hit rate limits or errors.
-2. **OpenRouter**, as a second tier, trying free-tier community models first (Llama, Qwen, Nemotron, Gemma, GPT-OSS) before any paid models, so a request can still succeed even with zero account balance.
-
-A response is also checked for signs of truncation (unbalanced code fences, dangling table rows, sentences cut off mid-word) before being accepted — if it looks cut off, the client moves on to the next model rather than returning a broken answer.
-
-### Message formatting
-
-LLM output is plain Markdown internally, but Telegram doesn't render Markdown tables or LaTeX reliably. `src/sender.py` and `src/utils.py` convert it through a few stages: tables get normalized and re-rendered as monospaced blocks, LaTeX gets wrapped for Telegram's math rendering, and if Telegram's richer message API isn't available the bot falls back to HTML and then to plain text.
+Modes live in one place, `src/modes.py`: the keyboard, the `/mode` picker, button routing, the command menu, and help all read from it. Adding a mode is one entry there plus one prompt in `src/llm.py`. `src/database.py` persists everything in SQLite (`aiosqlite`, WAL mode).
 
 ## Project structure
 
 ```
 src/
-├── agents/           Mode-specific agents (GeneralAgent, NutritionAgent, MathAgent, BaseAgent)
-├── handlers/         Telegram command/callback/message/photo/voice handlers
+├── agents/           GenericAgent, NutritionAgent, BaseAgent
+├── handlers/         command/callback/message/photo/voice/inline handlers
+├── modes.py          Mode registry (labels, titles, taglines)
 ├── orchestrator.py   Routes a request to the right agent
-├── llm.py            Gemini + OpenRouter client, key rotation, fallback chain
+├── llm.py            Gemini + OpenRouter client, key rotation, fallback, thinking control
 ├── sender.py         Reply formatting and delivery
-├── utils.py          Markdown -> Telegram HTML conversion, nutrition data parsing
-├── database.py       SQLite persistence (users, messages, nutrition log, usage stats)
+├── utils.py          Markdown -> Telegram HTML, nutrition parsing
+├── database.py       SQLite persistence (users, messages, nutrition log, stats, feedback)
 ├── config.py         Environment configuration
 └── bot.py            Application entry point
 ```
@@ -84,7 +98,7 @@ src/
 
 - Python 3.13+
 - A Telegram bot token
-- At least one Gemini API key, or an OpenRouter API key (free-tier models work without billing set up)
+- At least one Gemini API key, or an OpenRouter API key (free-tier models work without billing)
 
 ### Configuration
 
@@ -95,9 +109,13 @@ TELEGRAM_BOT_TOKEN=your_token
 GOOGLE_API_KEYS=key1,key2
 OPENROUTER_API_KEY=your_key
 ADMIN_IDS=123456789
+
+# Optional: durable storage on hosts without a persistent disk (Turso/libSQL)
+TURSO_DATABASE_URL=libsql://your-db.turso.io
+TURSO_AUTH_TOKEN=your_turso_token
 ```
 
-`GOOGLE_API_KEYS` accepts a comma-separated list — the client rotates between them and skips ones that are temporarily rate-limited.
+`GOOGLE_API_KEYS` is a comma-separated list — the client rotates between keys and skips rate-limited ones. `ADMIN_IDS` is a comma-separated list of Telegram IDs (find yours with `/id`); admin access is fail-closed, so when it is empty the admin commands are disabled for everyone.
 
 ### Running locally
 
@@ -112,120 +130,148 @@ python -m src.bot
 docker compose up --build
 ```
 
-The container persists the SQLite database in a named volume (`bot_data`) so history and stats survive restarts.
+The database lives in a named volume (`bot_data`) so history and stats survive restarts.
+
+### Deploying on Render (free tier)
+
+The bot supports webhook mode for platforms where an incoming request wakes a sleeping service: set `WEBHOOK_URL` to the public HTTPS URL and `PORT` as required, and it switches from polling automatically.
+
+The free tier spins a service down after ~15 minutes of inactivity. To keep it awake, the bot pings its own `WEBHOOK_URL` every `KEEPALIVE_MINUTES` (default 10, must be under 15). For extra reliability, also point a free uptime monitor (UptimeRobot, cron-job.org) at the URL.
+
+Persistence caveat: the free tier has an ephemeral filesystem and no persistent disk, so the SQLite file is wiped on every **redeploy** (and on the rare platform restart). Keep-alive prevents sleep-restarts, so data survives between your own deploys but not across them. On a paid plan, attach a Persistent Disk at `/data` and set `DB_PATH=/data/bot.db`. On the free tier, use a free **Turso** (libSQL) database: create one at turso.tech, then set `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` in the environment — the bot stores everything remotely and data survives every redeploy. Left unset, it keeps using the local SQLite file. The schema is SQLite-compatible, so nothing else changes.
 
 ---
 
 ## Русская версия
 
-Модульная платформа для Telegram-бота, которая распределяет запросы пользователя между специализированными AI-агентами, а не отдаёт всё одному универсальному ассистенту. Начинался проект как простой бот для подсчёта КБЖУ, а затем был переработан в небольшой агентный фреймворк, чтобы новые возможности можно было добавлять без изменения основной логики маршрутизации.
+Модульный Telegram-бот, который направляет каждое сообщение специализированному AI-агенту, а не одному универсальному ассистенту. Начинался как трекер питания и вырос в небольшой агентный фреймворк, где добавление режима — это одна запись в реестре и системный промпт.
 
-### Что умеет бот
+### Режимы
 
-Сейчас доступно три режима, переключаемых пользователем через клавиатуру или команду `/mode`:
+Переключаются пользователем через нижнюю клавиатуру или команду `/mode`:
 
-- **Общение** — структурированный ассистент с markdown-форматированием ответов.
-- **Питание** — анализирует приём пищи (по текстовому описанию или фото), оценивает калории/белки/жиры/углеводы и даёт практические рекомендации по питанию. Дневные итоги считаются автоматически и доступны через команду `/today`.
-- **Математика** — разбирает задачи по шагам, все формулы выводятся в виде корректного LaTeX, а не обычного текста.
+- **Общение** — умный помощник по делу для любых вопросов.
+- **Питание** — оценивает калории и БЖУ по фото или описанию, отвечает на вопросы о еде и диетах, ведёт итоги за день и неделю (`/today`, `/week`).
+- **Математика** — решает задачи по шагам, формулы выводятся корректным LaTeX.
+- **Тренер** — персональный тренер: программы тренировок, техника упражнений, замены для дома и зала.
+- **Текст** — письма, посты, резюме, рерайт, пересказы и переводы, готовые к копированию.
+- **Код** — сеньор-разработчик: корректный идиоматичный код с кратким пояснением.
 
-У каждого режима свой системный промпт и правила форматирования ответа, но все они работают на одной и той же инфраструктуре: истории сообщений, пользовательских настройках и LLM-клиенте.
+Ключевое поведение во всех режимах — **адаптивное оформление**: на простой вопрос бот отвечает одним-двумя предложениями и использует таблицы, заголовки или списки только когда они реально помогают, а не строит таблицу на каждый ответ.
 
-Кроме текста и фото, бот принимает **голосовые сообщения** (распознаются через нативное понимание аудио в Gemini, после чего обрабатываются по тому же пайплайну, что и обычный текст) и может быть добавлен в **групповые чаты** — там он отвечает только при упоминании через @ или ответе на его сообщение, не вмешиваясь в остальную переписку группы.
+Кроме текста бот принимает **фото** (блюдо в режиме Питание, скриншот кода в режиме Код, упражнение в режиме Тренер и т. д.) и **голосовые** (распознаются нативным аудио Gemini и обрабатываются как обычный текст). Его можно добавить в **группы** — там он отвечает только при @упоминании или ответе на его сообщение.
 
 ### Команды
 
 | Команда | Кому | Описание |
 |---|---|---|
 | `/start` | все | Регистрация и клавиатура выбора режима |
-| `/mode` | все | Переключение между Общение / Питание / Математика |
-| `/today` | все | Итоги по калориям/БЖУ за сегодня (режим Питание) |
+| `/mode` | все | Переключение между режимами |
+| `/today` | все | Итоги по калориям/БЖУ за сегодня |
+| `/week` | все | Питание за 7 дней со средним за день |
 | `/settings` | все | Длина ответов, креативность, язык |
-| `/stats` | все | Личная статистика активности (сообщения, проанализированные блюда, задержка) |
-| `/undo` | все | Удалить последний обмен сообщениями из истории |
+| `/stats` | все | Ваша активность: запросы, блюда, задержка, дата регистрации, последняя активность |
+| `/undo` | все | Удалить последний обмен сообщениями |
 | `/export` | все | Выгрузить историю переписки в файл |
 | `/clear` | все | Очистить историю переписки |
-| `/admin` | админы | Панель: активные пользователи, задержка, пул API-ключей, топ пользователей, экспорт в CSV |
+| `/feedback <текст>` | все | Отправить отзыв или идею (сохраняется и пересылается админам) |
+| `/id` | все | Показать ваш Telegram ID (для `ADMIN_IDS`) |
+| `/admin` | админы | Панель: рост, активные пользователи, задержка, пул ключей, топ, отзывы, экспорт CSV |
 | `/broadcast <текст>` | админы | Рассылка всем зарегистрированным пользователям |
 | `/disable_model` `/enable_model` | админы | Runtime-выключатель модели в цепочке фоллбеков |
+
+### Как достигается качество и скорость
+
+`src/llm.py` сделан так, чтобы ответы были хорошими и быстрыми даже на общих бесплатных ключах:
+
+- **Адаптивные промпты.** Системный промпт каждого режима требует подбирать формат под вопрос и не лить воду, а не всегда выдавать таблицы и заголовки.
+- **Порядок моделей по качеству.** Цепочку возглавляют сильные и быстрые модели класса flash; за ними идут более дешёвые lite, старые версии, алиас `-latest` и, наконец, тяжёлая pro как запас.
+- **Управление размышлением.** Новые модели Gemini flash «думают» перед ответом, что добавляет несколько секунд и тратит квоту даже на пустяк. Быстрые режимы отправляют `thinkingBudget=0` (примерно в 4-5 раз быстрее, без потери качества для общения); в режиме Математика размышление остаётся для пошаговой корректности.
+- **Многоуровневые фоллбеки.** Прямой Gemini API с ротацией ключей и паузой ключа при лимите, затем OpenRouter (сначала бесплатные модели) — запрос проходит даже при нулевом балансе.
+- **Защита от обрыва.** Ответ с признаками обрезки (незакрытые блоки кода, оборванные таблицы, фраза на полуслове) отклоняется, и пробуется следующая модель.
+
+Отправка (`src/sender.py`) сначала пробует rich-message API Telegram, затем HTML из собственного конвертера Markdown/LaTeX (`src/utils.py`), затем обычный текст.
+
+### Статистика, которая не стирается
+
+Отслеживание роста — приоритет, поэтому данные об использовании постоянны. Таблицы `users`, `stats`, `nutrition_log` и `feedback` **никогда не очищаются автоматически** — итоги остаются точными всё время работы бота. Телеметрия каждого запроса (модель, токены, задержка) реальная для всех каналов, включая текст.
+
+- `/stats` показывает каждому пользователю его личную активность за всё время.
+- `/admin` даёт общую картину: всего пользователей, новые за сегодня и за 7 дней, активные за 24 часа и 7 дней, объём запросов за всё время и недавно, средняя задержка, проанализированные блюда, последние отзывы.
+- Единственная очистка убирает **историю чатов** старше 90 дней (только контекст переписки) и никогда не трогает статистику и пользователей.
 
 ### Архитектура
 
 ```
 Обновление от Telegram
       |
-src/handlers/         -> обработка команд, callback-ов и сообщений
+src/handlers/        Telegram-обвязка (команды, callback, сообщения, фото, голос, inline)
       |
-src/orchestrator.py   -> выбирает агента под текущий режим пользователя
+src/orchestrator.py  Выбирает агента под текущий режим пользователя
       |
-src/agents/            -> промпт и поведение конкретного режима (NutritionAgent, MathAgent, ...)
+src/agents/          GenericAgent на каждый режим (+ NutritionAgent для лога КБЖУ)
       |
-src/llm.py              -> провайдеро-независимый клиент для LLM
+src/llm.py           Клиент Gemini + OpenRouter: ротация ключей, фоллбеки, управление thinking
       |
-src/sender.py            -> форматирует и отправляет ответ обратно в Telegram
+src/sender.py        Форматирует и отправляет ответ в Telegram
 ```
 
-Рядом с этим потоком работает `src/database.py`, который хранит историю сообщений, настройки пользователей, дневные итоги по питанию и статистику использования в SQLite (через `aiosqlite`, с включённым WAL-режимом для параллельного доступа).
-
-#### Отказоустойчивость LLM
-
-Главным критерием при проектировании была надёжность, а не максимальное качество одной конкретной модели — бесплатные квоты у провайдеров заканчиваются быстро, особенно когда несколько проектов используют одни и те же ключи. `src/llm.py` решает это через многоуровневую цепочку фоллбеков:
-
-1. **Прямой Gemini API** — список моделей перебирается в порядке от наибольшего оставшегося суточного лимита к наименьшему, а API-ключи переключаются по кругу и временно ставятся "на паузу" при превышении лимита или ошибке.
-2. **OpenRouter** как второй уровень — сначала пробуются бесплатные модели сообщества (Llama, Qwen, Nemotron, Gemma, GPT-OSS), а уже потом платные, поэтому запрос может пройти даже при нулевом балансе аккаунта.
-
-Перед тем как принять ответ, он проверяется на признаки обрыва (незакрытые блоки кода, оборванные строки таблиц, предложения, обрезанные на полуслове) — если ответ похож на обрезанный, клиент переходит к следующей модели вместо того, чтобы вернуть пользователю "сломанный" текст.
-
-#### Форматирование сообщений
-
-Внутри LLM отвечает обычным Markdown, но Telegram не умеет надёжно рендерить markdown-таблицы и LaTeX. `src/sender.py` и `src/utils.py` прогоняют текст через несколько этапов: таблицы нормализуются и перерисовываются как моноширинные блоки, LaTeX оборачивается для математического рендеринга Telegram, а если расширенный API сообщений недоступен — бот откатывается на HTML, а затем на обычный текст.
+Все режимы описаны в одном месте — `src/modes.py`: оттуда читают клавиатура, выбор `/mode`, маршрутизация кнопок, меню команд и справка. Добавить режим — одна запись там и один промпт в `src/llm.py`. `src/database.py` хранит всё в SQLite (`aiosqlite`, режим WAL).
 
 ### Структура проекта
 
 ```
 src/
-├── agents/           Агенты под конкретные режимы (GeneralAgent, NutritionAgent, MathAgent, BaseAgent)
-├── handlers/         Обработчики команд/callback-ов/сообщений/фото/голоса
+├── agents/           GenericAgent, NutritionAgent, BaseAgent
+├── handlers/         обработчики команд/callback/сообщений/фото/голоса/inline
+├── modes.py          Реестр режимов (метки, названия, описания)
 ├── orchestrator.py   Маршрутизация запроса к нужному агенту
-├── llm.py            Клиент Gemini + OpenRouter, ротация ключей, цепочка фоллбеков
+├── llm.py            Клиент Gemini + OpenRouter, ротация ключей, фоллбеки, управление thinking
 ├── sender.py         Форматирование и отправка ответа
-├── utils.py          Конвертация Markdown в Telegram HTML, парсинг данных по питанию
-├── database.py       SQLite-хранилище (пользователи, сообщения, лог питания, статистика)
+├── utils.py          Конвертация Markdown в Telegram HTML, парсинг питания
+├── database.py       SQLite-хранилище (пользователи, сообщения, лог питания, статистика, отзывы)
 ├── config.py         Конфигурация из переменных окружения
 └── bot.py            Точка входа приложения
 ```
 
 ### Быстрый старт
 
-#### Требования
+Требования: Python 3.13+, токен Telegram-бота, хотя бы один Gemini API-ключ или OpenRouter API-ключ (бесплатные модели работают без оплаты).
 
-- Python 3.13+
-- Токен Telegram-бота
-- Хотя бы один Gemini API-ключ или OpenRouter API-ключ (бесплатные модели работают без подключения оплаты)
-
-#### Конфигурация
-
-Создайте файл `.env` в корне проекта:
+Создайте `.env` в корне проекта:
 
 ```
 TELEGRAM_BOT_TOKEN=your_token
 GOOGLE_API_KEYS=key1,key2
 OPENROUTER_API_KEY=your_key
 ADMIN_IDS=123456789
+
+# Optional: durable storage on hosts without a persistent disk (Turso/libSQL)
+TURSO_DATABASE_URL=libsql://your-db.turso.io
+TURSO_AUTH_TOKEN=your_turso_token
 ```
 
-`GOOGLE_API_KEYS` принимает список через запятую — клиент переключается между ключами и пропускает те, что временно превысили лимит.
+`GOOGLE_API_KEYS` — список через запятую, клиент переключается между ключами и пропускает те, что временно превысили лимит. `ADMIN_IDS` — список Telegram ID через запятую (свой узнайте через `/id`); доступ к админке работает по принципу fail-closed: при пустом значении админ-команды отключены для всех.
 
-#### Запуск локально
+Запуск локально:
 
 ```
 pip install -r requirements.txt
 python -m src.bot
 ```
 
-#### Запуск через Docker
+Запуск через Docker:
 
 ```
 docker compose up --build
 ```
 
-Контейнер хранит базу SQLite в именованном томе (`bot_data`), поэтому история и статистика сохраняются между перезапусками.
+База лежит в именованном томе (`bot_data`), поэтому история и статистика переживают перезапуски.
+
+### Развёртывание на Render (бесплатный тариф)
+
+Бот поддерживает webhook-режим для платформ, где входящий запрос будит спящий сервис: задайте `WEBHOOK_URL` (публичный HTTPS-адрес) и при необходимости `PORT` — переключение с polling произойдёт автоматически.
+
+Бесплатный тариф усыпляет сервис после ~15 минут без запросов. Чтобы он не засыпал, бот сам пингует свой `WEBHOOK_URL` каждые `KEEPALIVE_MINUTES` (по умолчанию 10, должно быть меньше 15). Для надёжности дополнительно направьте на этот адрес бесплатный аптайм-монитор (UptimeRobot, cron-job.org).
+
+Нюанс с данными: на бесплатном тарифе эфемерная файловая система и нет постоянного диска, поэтому файл SQLite стирается при каждом **передеплое** (и при редких перезапусках платформы). Keep-alive убирает рестарты от засыпания, поэтому данные живут между вашими деплоями, но не переживают сам деплой. На платном тарифе подключите Persistent Disk на `/data` и задайте `DB_PATH=/data/bot.db`. На бесплатном тарифе используйте бесплатную базу **Turso** (libSQL): создайте её на turso.tech и задайте `TURSO_DATABASE_URL` и `TURSO_AUTH_TOKEN` — бот будет хранить всё удалённо, и данные переживут любой передеплой. Если не заданы, используется локальный файл SQLite. Схема SQLite-совместима, так что больше ничего менять не нужно.

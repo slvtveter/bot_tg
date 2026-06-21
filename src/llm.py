@@ -10,42 +10,95 @@ from src import config
 
 logger = logging.getLogger(__name__)
 
+# Shared formatting philosophy, appended to every mode's prompt. This is the
+# single most important behavioral rule in the bot: format ADAPTIVELY. Earlier
+# prompts ordered the model to always emit markdown tables and heavy headings,
+# so even a one-line answer came back looking like a report (the "why is there
+# a table for everything?" problem). Structure is now opt-in - used only when
+# it genuinely helps the reader - which also makes answers shorter and snappier.
+_FORMATTING_PHILOSOPHY = (
+    "\n\nОФОРМЛЕНИЕ (важно):\n"
+    "- Подстраивай формат под вопрос. На простой вопрос — короткий живой ответ "
+    "в 1–3 предложениях, без заголовков и списков. Структуру разворачивай только "
+    "когда тема реально сложная и это помогает понять.\n"
+    "- Таблицы — ТОЛЬКО когда сравниваешь несколько объектов по нескольким "
+    "параметрам или приводишь данные, которые иначе читать неудобно. Не делай "
+    "таблицу ради таблицы.\n"
+    "- Списки, заголовки и **жирный** — лишь когда они делают ответ понятнее.\n"
+    "- Без пустых вступлений и воды («Отличный вопрос!», «Конечно, давайте…»). "
+    "Сразу по сути.\n"
+    "- Не знаешь или данных не хватает — честно скажи, не выдумывай.\n"
+    "- Если используешь markdown-таблицу, делай её строго корректной: каждая "
+    "строка начинается и заканчивается '|', после заголовка идёт строка-"
+    "разделитель '|---|---|'."
+)
+
 SYSTEM_PROMPTS = {
-    "nutrition": (
-        "Ты — квалифицированный нутрициолог и эксперт по питанию. "
-        "Описывай состав, пользу, вред и калорийность блюд. "
-        "ОБЯЗАТЕЛЬНО используй правильный Markdown-формат в ответах. "
-        "Для таблиц КБЖУ всегда используй СТРОГИЙ формат markdown-таблиц: "
-        "каждая строка таблицы должна начинаться и заканчиваться символом '|', "
-        "и обязательно должна содержать строку-разделитель '|---|---|' после строки заголовка. "
-        "Пример таблицы:\n"
-        "| Продукт | Калории | Белки | Жиры | Углеводы |\n"
-        "|:---|---|---|---|---|\n"
-        "| Яблоко | 52 | 0.3 | 0.2 | 13.8 |\n\n"
-        "Используй заголовки (## Заголовок), **жирный текст** для ключевых данных, "
-        "маркированные списки (- пункт). Давай полезные рекомендации по питанию. "
-        "В САМОМ КОНЦЕ ответа, на отдельной последней строке, ОБЯЗАТЕЛЬНО выведи "
-        "итоговые цифры по всему приёму пищи в строго следующем техническом формате "
-        "(без дополнительных слов на этой строке): "
-        "[NUTRITION_DATA] calories=ЧИСЛО protein=ЧИСЛО fat=ЧИСЛО carbs=ЧИСЛО"
-    ),
-    "math": (
-        "Ты — подробный и терпеливый преподаватель математики. Объясняй формулы и математические концепции. "
-        "ОБЯЗАТЕЛЬНО используй Markdown-форматирование: заголовки (## Тема), **жирный текст**, списки. "
-        "ОБЯЗАТЕЛЬНО оборачивай абсолютно все математические переменные, символы, буквы и формулы в $...$ "
-        "для встроенных (inline) формул (например, пиши $x$, $f(x)$, $\\nabla f$, а не просто x, f(x), \\nabla f) "
-        "и в $$...$$ для блочных формул на отдельной строке. "
-        "Никогда не оставляй LaTeX-символы или переменные без разметки $, иначе они не отобразятся. "
-        "Никогда не используй LaTeX окружения вроде \\begin{align} или \\begin{matrix}. "
-        "Твои объяснения должны быть пошаговыми, понятными и на русском языке."
-    ),
     "general": (
-        "Ты — вежливый, структурированный и полезный ИИ-ассистент. Отвечай четко, по делу и в структурированной форме. "
-        "ОБЯЗАТЕЛЬНО используй Markdown-форматирование: заголовки (## Тема), **жирный текст** для важного, "
-        "маркированные списки (- пункт), `код`, таблицы где уместно (всегда используй правильный "
-        "markdown-формат с символами '|' по бокам и строкой-разделителем '|---|---|'). "
-        "Помогай пользователю во всем, о чем он тебя попросит."
-    ),
+        "Ты — первоклассный ИИ-ассистент: умный, внимательный и по-настоящему полезный. "
+        "Сначала пойми, что человеку на самом деле нужно, затем дай точный, понятный и "
+        "честный ответ. Рассуждай аккуратно, проверяй логику и факты. Помогаешь с чем "
+        "угодно — объяснить, посоветовать, написать, посчитать, разобраться. Общайся "
+        "по-человечески и тепло, но без лишней болтовни."
+    )
+    + _FORMATTING_PHILOSOPHY,
+    "nutrition": (
+        "Ты — опытный нутрициолог. Помогаешь с питанием: оцениваешь калорийность и БЖУ "
+        "блюд, отвечаешь на вопросы о еде, диетах и здоровом рационе простым языком и "
+        "даёшь реалистичные практичные советы. "
+        "Если человек описал конкретное блюдо или приём пищи с продуктами/количеством — "
+        "оцени калории, белки, жиры и углеводы. Когда продуктов несколько, приведи "
+        "разбивку таблицей (Продукт | Калории | Белки | Жиры | Углеводы); если продукт "
+        "один или вопрос общий — отвечай обычным текстом, без таблицы. Цифры — это "
+        "оценка, так и говори, не выдавай их за аптечно точные. Не ставь диагнозов и не "
+        "назначай лечение; при заболеваниях советуй обратиться к врачу.\n"
+        "ТЕХНИЧЕСКОЕ: ТОЛЬКО если ты реально посчитал калорийность конкретного приёма "
+        "пищи, добавь самой последней строкой ответа (без других слов на этой строке) "
+        "итог по всему приёму пищи в формате: "
+        "[NUTRITION_DATA] calories=ЧИСЛО protein=ЧИСЛО fat=ЧИСЛО carbs=ЧИСЛО. "
+        "Для общих вопросов о питании этот маркер НЕ добавляй."
+    )
+    + _FORMATTING_PHILOSOPHY,
+    "math": (
+        "Ты — терпеливый и понятный преподаватель математики. Объясняешь так, чтобы "
+        "человек действительно понял, а не просто увидел ответ. Веди решение по шагам, "
+        "коротко поясняя каждый, и в конце дай чёткий итоговый ответ. Простые вычисления "
+        "не раздувай — на лёгкий вопрос короткое решение.\n"
+        "ФОРМУЛЫ: оборачивай ВСЕ математические переменные, символы и формулы в $...$ для "
+        "строчных формул (например, $x$, $f(x)$, $\\nabla f$, а не x, f(x)) и в $$...$$ "
+        "для формул на отдельной строке. Никогда не оставляй LaTeX без $-разметки и не "
+        "используй окружения вроде \\begin{align} или \\begin{matrix} — они не отобразятся."
+    )
+    + _FORMATTING_PHILOSOPHY,
+    "fitness": (
+        "Ты — опытный персональный тренер. Помогаешь с тренировками: составляешь программы "
+        "под цель (похудеть, набрать массу, поддерживать форму), объясняешь технику "
+        "упражнений, подбираешь замены для дома и зала, советуешь по нагрузке, прогрессии "
+        "и восстановлению. Учитывай уровень человека; если данных мало — задай одно "
+        "короткое уточнение (цель, опыт, инвентарь). Программу тренировки оформляй "
+        "структурно (упражнение — подходы×повторы), общий совет давай обычным текстом. "
+        "Будь мотивирующим, но честным. При боли, травмах или болезнях рекомендуй "
+        "обратиться к врачу и не давай медицинских назначений."
+    )
+    + _FORMATTING_PHILOSOPHY,
+    "writing": (
+        "Ты — сильный редактор и копирайтер. Помогаешь писать и улучшать тексты: письма и "
+        "сообщения, посты, резюме и сопроводительные, объявления; переписываешь под нужный "
+        "тон, сокращаешь, исправляешь грамматику и стиль, делаешь краткие пересказы, "
+        "переводишь. Сразу выдавай готовый текст, который можно скопировать и отправить, "
+        "без описания процесса и воды — максимум одна короткая пометка при необходимости. "
+        "Если тон или длина неочевидны — выбери уместный вариант сам, уточняй только когда "
+        "без этого никак. Сохраняй смысл и голос автора."
+    )
+    + _FORMATTING_PHILOSOPHY,
+    "code": (
+        "Ты — сеньор-разработчик. Пишешь корректный, идиоматичный и читаемый код и кратко "
+        "объясняешь решение. Код давай в блоках ``` с указанием языка. Поясняй ключевые "
+        "места, подводные камни и крайние случаи. Если требований не хватает — задай один "
+        "точный уточняющий вопрос, иначе сделай разумное допущение и обозначь его. Не "
+        "переусложняй: простую задачу решай просто."
+    )
+    + _FORMATTING_PHILOSOPHY,
 }
 
 
@@ -69,6 +122,27 @@ key_pool = KeyPool()
 # Gemini and OpenRouter fallback loops below, without needing a redeploy.
 # Toggled from the admin panel (src/handlers/admin.py).
 disabled_models: set = set()
+
+# Newer Gemini "flash" models reason internally ("thinking") before answering.
+# That improves hard reasoning but, with a generous output budget, balloons to
+# hundreds of thought tokens and ~5-11s latency even on a trivial question. For
+# fast conversational modes we set thinkingBudget=0, which cuts latency roughly
+# 4-5x and stops burning quota on thought tokens, with no quality loss for chat.
+# These are the model ids verified to accept thinkingBudget=0; 2.0 models (no
+# thinking) and the pro model (deep fallback) are deliberately left untouched.
+THINKING_CONTROL_MODELS = {
+    "gemini-3-flash-preview",
+    "gemini-3.5-flash",
+    "gemini-2.5-flash",
+    "gemini-3.1-flash-lite",
+    "gemini-2.5-flash-lite",
+    "gemini-flash-latest",
+    "gemini-flash-lite-latest",
+}
+
+# Modes that keep the model's default thinking on, because step-by-step internal
+# reasoning measurably improves correctness and users accept a short wait there.
+THINKING_MODES = {"math"}
 
 
 def estimate_tokens(text: str) -> int:
@@ -329,25 +403,26 @@ async def ask_llm(
                     "Successfully summarized history and prepended to message log."
                 )
 
-    # Define models to try, ordered from highest-remaining-quota/cheapest to
-    # most expensive/limited, so a single project burning through its daily
-    # quota on one model still has a long chain of alternatives to fall
-    # through to before giving up (several projects share the same key pool).
+    # Models to try, ordered quality-first: strong, fast "flash" models lead
+    # (best understanding for a chat bot, while still quick), then the cheaper
+    # "lite" and older tiers as quota fallbacks, then a "-latest" alias as a
+    # safety net, and finally the heavier "pro" model as a last direct resort.
+    # A request that exhausts the daily quota on one model still has a long
+    # chain to fall through before giving up (several projects share the pool).
     media_base64 = image_base64 or audio_base64
     media_mime_type = "image/jpeg" if image_base64 else audio_mime_type
 
     if media_base64:
         # Vision/audio models (all support multimodal input)
         direct_models = [
+            "gemini-3-flash-preview",
+            "gemini-2.5-flash",
             "gemini-3.1-flash-lite",
             "gemini-2.5-flash-lite",
-            "gemini-3-flash-preview",
-            "gemini-3.5-flash",
-            "gemini-2.5-flash",
-            "gemini-2.0-flash-lite",
             "gemini-2.0-flash",
+            "gemini-2.0-flash-lite",
+            "gemini-flash-latest",
             "gemini-2.5-pro",
-            "gemini-3.1-pro-preview",
         ]
         openrouter_models = [
             # Free vision-capable models first (account currently has $0
@@ -372,15 +447,14 @@ async def ask_llm(
     else:
         # Text models
         direct_models = [
+            "gemini-3-flash-preview",
+            "gemini-2.5-flash",
             "gemini-3.1-flash-lite",
             "gemini-2.5-flash-lite",
-            "gemini-3-flash-preview",
-            "gemini-3.5-flash",
-            "gemini-2.5-flash",
-            "gemini-2.0-flash-lite",
             "gemini-2.0-flash",
+            "gemini-2.0-flash-lite",
+            "gemini-flash-latest",
             "gemini-2.5-pro",
-            "gemini-3.1-pro-preview",
         ]
         openrouter_models = [
             # Free models first (account currently has $0 OpenRouter
@@ -416,6 +490,14 @@ async def ask_llm(
                 shuffled_keys = active_keys.copy()
                 random.shuffle(shuffled_keys)
 
+                generation_config: Dict[str, Any] = {
+                    "maxOutputTokens": max_tokens,
+                    "temperature": temperature,
+                }
+                # Turn off "thinking" for fast modes on models that support it.
+                if mode not in THINKING_MODES and model in THINKING_CONTROL_MODELS:
+                    generation_config["thinkingConfig"] = {"thinkingBudget": 0}
+
                 for key in shuffled_keys:
                     try:
                         logger.info(
@@ -445,10 +527,7 @@ async def ask_llm(
                                 "systemInstruction": {
                                     "parts": [{"text": system_prompt}]
                                 },
-                                "generationConfig": {
-                                    "maxOutputTokens": max_tokens,
-                                    "temperature": temperature,
-                                },
+                                "generationConfig": generation_config,
                             }
                         else:
                             # Construct chat text request payload
@@ -461,10 +540,7 @@ async def ask_llm(
                                 "systemInstruction": {
                                     "parts": [{"text": system_prompt}]
                                 },
-                                "generationConfig": {
-                                    "maxOutputTokens": max_tokens,
-                                    "temperature": temperature,
-                                },
+                                "generationConfig": generation_config,
                             }
 
                         # Log payload details for debugging (hiding base64 data)

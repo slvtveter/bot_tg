@@ -1,3 +1,4 @@
+import html
 import re
 
 from telegram import Bot, Update
@@ -12,6 +13,7 @@ from src.database import (
     set_user_mode,
     upsert_user,
 )
+from src.modes import LABEL_TO_MODE, mode_title
 from src.orchestrator import Orchestrator
 from src.sender import send_response
 
@@ -73,16 +75,16 @@ async def process_text_message(
     # 3.5. Retrieve settings
     settings = await get_user_settings(user_id=user_id)
 
-    # 4. Query Orchestrator
-    response_text = await orchestrator.route_and_process(
-        mode=mode, user_input=text, history=history, user_settings=settings, user_id=user_id
+    # 4. Query Orchestrator (returns the answer plus real LLM telemetry)
+    response_text, model_name, prompt_tokens, completion_tokens, latency = (
+        await orchestrator.route_and_process(
+            mode=mode,
+            user_input=text,
+            history=history,
+            user_settings=settings,
+            user_id=user_id,
+        )
     )
-
-    # Placeholder telemetry
-    model_name = "Agentic-LLM"
-    prompt_tokens = 0
-    completion_tokens = 0
-    latency = 0.0
 
     if response_text:
         # 5. Save bot's reply
@@ -144,20 +146,18 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         last_name=user.last_name,
     )
 
-    # Route Bottom Keyboard Buttons
-    if text == "🍏 Питание":
-        await set_user_mode(user_id, "nutrition")
-        await update.message.reply_html("Режим работы изменен на: <b>🍏 Питание</b>")
+    # Route bottom-keyboard mode buttons via the central registry, so new modes
+    # become switchable from the keyboard automatically.
+    if text in LABEL_TO_MODE:
+        selected_mode = LABEL_TO_MODE[text]
+        await set_user_mode(user_id, selected_mode)
+        await update.message.reply_html(
+            f"Режим работы изменён на: <b>{html.escape(mode_title(selected_mode))}</b>"
+        )
         return
-    elif text == "🧮 Математика":
-        await set_user_mode(user_id, "math")
-        await update.message.reply_html("Режим работы изменен на: <b>🧮 Математика</b>")
-        return
-    elif text == "💬 Общение":
-        await set_user_mode(user_id, "general")
-        await update.message.reply_html("Режим работы изменен на: <b>💬 Общение</b>")
-        return
-    elif text == "📊 Статистика":
+
+    # Route bottom-keyboard utility buttons.
+    if text == "📊 Статистика":
         from src.handlers.commands import stats_command
 
         await stats_command(update, context)
