@@ -495,6 +495,24 @@ async def get_user_mode(user_id: int, db_path: str = DB_PATH) -> str:
         return "general"
 
 
+async def get_user_language(user_id: int, db_path: str = DB_PATH) -> str:
+    """
+    Returns the user's interface/reply language ('ru' or 'en'), defaulting to 'ru'.
+    """
+    try:
+        async with get_db_connection(db_path) as db:
+            async with db.execute(
+                "SELECT language FROM users WHERE user_id = ?", (user_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row and row[0] == "en":
+                    return "en"
+                return "ru"
+    except Exception as e:
+        logger.warning(f"Error getting language for user {user_id}: {e}")
+        return "ru"
+
+
 async def get_user_settings(user_id: int, db_path: str = DB_PATH) -> Dict[str, str]:
     """
     Retrieves the settings (max_length, creativity, language) of a user.

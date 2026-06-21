@@ -1,4 +1,3 @@
-import html
 import re
 
 from telegram import Bot, Update
@@ -6,6 +5,7 @@ from telegram.ext import ContextTypes
 
 from src.database import (
     get_chat_history,
+    get_user_language,
     get_user_mode,
     get_user_settings,
     log_message,
@@ -13,7 +13,7 @@ from src.database import (
     set_user_mode,
     upsert_user,
 )
-from src.modes import LABEL_TO_MODE, mode_title
+from src.i18n import mode_title, resolve_button, t
 from src.orchestrator import Orchestrator
 from src.sender import send_response
 
@@ -112,7 +112,7 @@ async def process_text_message(
         # All models failed
         await bot.send_message(
             chat_id=chat_id,
-            text="⚠️ К сожалению, не удалось получить ответ от ИИ. Пожалуйста, попробуйте позже.",
+            text=t("error_no_answer", settings.get("language", "ru")),
             reply_to_message_id=reply_to_message_id,
         )
 
@@ -148,32 +148,33 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         last_name=user.last_name,
     )
 
-    # Route bottom-keyboard mode buttons via the central registry, so new modes
-    # become switchable from the keyboard automatically.
-    if text in LABEL_TO_MODE:
-        selected_mode = LABEL_TO_MODE[text]
-        await set_user_mode(user_id, selected_mode)
-        await update.message.reply_html(
-            f"Режим работы изменён на: <b>{html.escape(mode_title(selected_mode))}</b>"
-        )
-        return
+    # Route bottom-keyboard buttons (matched in either language) via the
+    # registry, so switching the interface language never breaks the buttons.
+    button = resolve_button(text)
+    if button:
+        kind, mode = button
+        if kind == "mode":
+            await set_user_mode(user_id, mode)
+            lang = await get_user_language(user_id)
+            await update.message.reply_html(
+                t("mode_changed", lang, title=mode_title(mode, lang))
+            )
+            return
+        if kind == "stats":
+            from src.handlers.commands import stats_command
 
-    # Route bottom-keyboard utility buttons.
-    if text == "📊 Статистика":
-        from src.handlers.commands import stats_command
+            await stats_command(update, context)
+            return
+        if kind == "clear":
+            from src.handlers.commands import clear_command
 
-        await stats_command(update, context)
-        return
-    elif text == "🧹 Очистить чат":
-        from src.handlers.commands import clear_command
+            await clear_command(update, context)
+            return
+        if kind == "settings":
+            from src.handlers.settings import settings_command
 
-        await clear_command(update, context)
-        return
-    elif text == "⚙️ Настройки":
-        from src.handlers.settings import settings_command
-
-        await settings_command(update, context)
-        return
+            await settings_command(update, context)
+            return
 
     # Show typing status to user
     await context.bot.send_chat_action(

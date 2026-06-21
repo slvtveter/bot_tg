@@ -3,24 +3,23 @@ from typing import Dict, List, Optional
 from src.agents.base import AgentResult, BaseAgent
 from src.agents.generic_agent import GenericAgent
 from src.agents.nutrition_agent import NutritionAgent
-from src.modes import DEFAULT_MODE, MODES
+from src.i18n import DEFAULT_MODE, MODE_KEYS
 
 
 class Orchestrator:
     """
-    Holds one agent per mode (built from the central MODES registry) and
-    dispatches a request to the agent for the user's current mode. Every mode
-    uses GenericAgent except nutrition, which needs to log parsed macros.
+    Holds one agent per mode (from the central mode registry) and dispatches a
+    request to the agent for the user's current mode. Every mode uses
+    GenericAgent except nutrition, which also logs parsed macros.
     """
 
     def __init__(self) -> None:
         self.agents: Dict[str, BaseAgent] = {}
-        for mode, cfg in MODES.items():
-            name = cfg["title"]
+        for mode in MODE_KEYS:
             if mode == "nutrition":
-                self.agents[mode] = NutritionAgent(mode, name)
+                self.agents[mode] = NutritionAgent(mode, mode)
             else:
-                self.agents[mode] = GenericAgent(mode, name)
+                self.agents[mode] = GenericAgent(mode, mode)
 
     async def route_and_process(
         self,

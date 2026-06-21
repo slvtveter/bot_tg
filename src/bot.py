@@ -72,18 +72,32 @@ async def post_init(application) -> None:
     # Register Command Menu in Telegram UI
     from telegram import BotCommand
 
-    commands = [
+    commands_ru = [
         BotCommand("start", "Перезапустить бота / Начать"),
         BotCommand("mode", "Выбрать режим работы"),
         BotCommand("week", "Итоги питания за 7 дней"),
-        BotCommand("settings", "Настройки параметров ИИ"),
+        BotCommand("settings", "Настройки ИИ"),
         BotCommand("stats", "Показать статистику использования"),
         BotCommand("clear", "Очистить историю и начать заново"),
         BotCommand("feedback", "Отправить отзыв или идею"),
-        BotCommand("admin", "Панель администратора (доступно админам)"),
+        BotCommand("admin", "Панель администратора (для админов)"),
         BotCommand("help", "Справка и FAQ"),
     ]
-    await application.bot.set_my_commands(commands)
+    commands_en = [
+        BotCommand("start", "Restart / Get started"),
+        BotCommand("mode", "Choose a mode"),
+        BotCommand("week", "Nutrition over the last 7 days"),
+        BotCommand("settings", "AI settings"),
+        BotCommand("stats", "Show your usage stats"),
+        BotCommand("clear", "Clear history and start fresh"),
+        BotCommand("feedback", "Send feedback or an idea"),
+        BotCommand("admin", "Admin panel (admins only)"),
+        BotCommand("help", "Help and FAQ"),
+    ]
+    # The command-menu language follows the user's Telegram client locale (not
+    # the in-bot setting): English is the default, Russian for ru-locale clients.
+    await application.bot.set_my_commands(commands_en)
+    await application.bot.set_my_commands(commands_ru, language_code="ru")
     logger.info("Bot commands menu registered successfully.")
 
     if not config.ADMIN_IDS:

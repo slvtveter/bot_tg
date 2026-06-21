@@ -6,6 +6,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from src.database import (
+    get_user_language,
     get_user_mode,
     get_user_settings,
     log_message,
@@ -14,6 +15,7 @@ from src.database import (
     upsert_user,
 )
 from src.handlers.messages import resolve_group_addressing
+from src.i18n import t
 from src.llm import ask_llm
 from src.sender import send_response
 from src.utils import extract_nutrition_totals
@@ -51,6 +53,7 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
 
     mode = await get_user_mode(user_id)
+    lang = await get_user_language(user_id)
 
     # Show typing status to user
     await context.bot.send_chat_action(
@@ -171,13 +174,9 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 reply_to_message_id=update.message.message_id,
             )
         else:
-            await update.message.reply_text(
-                "⚠️ Не удалось проанализировать изображение. Попробуйте еще раз позже."
-            )
+            await update.message.reply_text(t("photo_failed", lang))
 
     except Exception as e:
         logger.error(f"Error handling photo: {e}")
         escaped_error = html.escape(str(e))
-        await update.message.reply_html(
-            f"❌ Произошла ошибка при обработке фотографии: <code>{escaped_error}</code>"
-        )
+        await update.message.reply_html(t("photo_error", lang, e=escaped_error))

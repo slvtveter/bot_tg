@@ -5,8 +5,9 @@ import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from src.database import upsert_user
+from src.database import get_user_language, upsert_user
 from src.handlers.messages import process_text_message, resolve_group_addressing
+from src.i18n import t
 from src.llm import ask_llm
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,7 @@ async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         first_name=user.first_name,
         last_name=user.last_name,
     )
+    lang = await get_user_language(user_id)
 
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
 
@@ -68,9 +70,7 @@ async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
 
         if not transcript or not transcript.strip():
-            await update.message.reply_text(
-                "⚠️ Не удалось распознать голосовое сообщение. Попробуйте ещё раз."
-            )
+            await update.message.reply_text(t("voice_failed", lang))
             return
 
         await process_text_message(
@@ -84,6 +84,4 @@ async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     except Exception as e:
         logger.error(f"Error handling voice message: {e}")
         escaped_error = html.escape(str(e))
-        await update.message.reply_html(
-            f"❌ Произошла ошибка при обработке голосового сообщения: <code>{escaped_error}</code>"
-        )
+        await update.message.reply_html(t("voice_error", lang, e=escaped_error))
