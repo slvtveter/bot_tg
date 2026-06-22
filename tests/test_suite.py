@@ -10,10 +10,10 @@ TEST_DB_PATH = os.path.join(TEST_DB_DIR, "test_bot.db")
 os.environ["DB_PATH"] = TEST_DB_PATH
 
 # Import codebase modules
-import utils
-import database
-import llm
-import config
+from src import utils
+from src import database
+from src import llm
+from src import config
 
 
 class TestFormatting(unittest.TestCase):
@@ -299,7 +299,7 @@ class TestConfig(unittest.TestCase):
             def getenv_mock(key, default=None):
                 if key == "TELEGRAM_BOT_TOKEN":
                     return "dummy_token"
-                if key in ("GOOGLE_API_KEYS", "OPENROUTER_API_KEY"):
+                if key in ("GOOGLE_API_KEYS", "OPENROUTER_API_KEY", "GROQ_API_KEY"):
                     return default if default is not None else ""
                 return original_env.get(key, default)
             mock_getenv.side_effect = getenv_mock
@@ -532,7 +532,7 @@ class TestDatabaseAdditional(unittest.IsolatedAsyncioTestCase):
         stats = await database.get_usage_stats(db_path=self.db_path)
         self.assertEqual(stats["total_requests"], 0)
 
-    @patch("database.get_db_connection")
+    @patch("src.database.get_db_connection")
     async def test_database_exceptions(self, mock_conn):
         mock_conn.side_effect = Exception("Database connection failed")
 
@@ -583,11 +583,13 @@ class TestLLMAdditional(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.original_google_keys = config.GOOGLE_API_KEYS
         self.original_openrouter_key = config.OPENROUTER_API_KEY
+        self.original_groq_key = config.GROQ_API_KEY
         llm.key_pool.cooldowns.clear()
 
     def tearDown(self):
         config.GOOGLE_API_KEYS = self.original_google_keys
         config.OPENROUTER_API_KEY = self.original_openrouter_key
+        config.GROQ_API_KEY = self.original_groq_key
         llm.key_pool.cooldowns.clear()
 
     def test_is_response_complete(self):
@@ -605,9 +607,16 @@ class TestLLMAdditional(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(llm.is_response_complete("```python\nprint(123)"))  # Unclosed code block
         self.assertFalse(llm.is_response_complete("This is **bold text"))      # Unclosed bold
         self.assertFalse(llm.is_response_complete("## 📊 Таблица КБЖУ\n\n| Продукт | Вес (г) | Белки")) # Cut-off table row
-        self.assertFalse(llm.is_response_complete("Яблоко — это прекрасный выбор для перекуса или дополнения к основному приему пищи. Оно содержит много витаминов и полезных веществ, которые благотворно влияют на пищеварительную систему человека и дают энергию на весь день без лишних калорий, что делает его отличным выбором для здорового")) # No punctuation/units at end
+        # NOTE: the "no trailing punctuation" rule was intentionally removed
+        # (see comment above is_response_complete) - it false-flagged too
+        # many complete replies and cost an extra fallback hop. A reply with
+        # no final punctuation is now treated as complete.
+        self.assertTrue(llm.is_response_complete("Яблоко — это прекрасный выбор для перекуса или дополнения к основному приему пищи. Оно содержит много витаминов и полезных веществ, которые благотворно влияют на пищеварительную систему человека и дают энергию на весь день без лишних калорий, что делает его отличным выбором для здорового"))
         self.assertFalse(llm.is_response_complete("Рекомендации:"))  # Ends with colon
-        self.assertFalse(llm.is_response_complete("Вывод, и"))       # Ends with conjunction/comma
+        self.assertFalse(llm.is_response_complete("Вывод,"))         # Ends with dangling comma
+        # The trailing-conjunction heuristic was removed along with the
+        # no-punctuation rule (see comment above is_response_complete).
+        self.assertTrue(llm.is_response_complete("Вывод, и так далее"))
 
     @patch("httpx.AsyncClient.post")
     async def test_ask_llm_settings_mappings(self, mock_post):
@@ -687,20 +696,16 @@ class TestLLMAdditional(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(called_payload["generationConfig"]["maxOutputTokens"], 1500)
 
     @patch("httpx.AsyncClient.post")
-    async def test_ask_llm_history_summarization(self, mock_post):
-        mock_resp_summary = MagicMock(spec=httpx.Response)
-        mock_resp_summary.status_code = 200
-        mock_resp_summary.json.return_value = {
-            "candidates": [{"content": {"parts": [{"text": "Summary of conversation."}]}}]
-        }
-
+    async def test_ask_llm_trims_long_history(self, mock_post):
+        # trim_history (src/llm.py) keeps only the most recent messages within
+        # HISTORY_TOKEN_BUDGET - it's a local truncation, not an extra
+        # summarization LLM call, so exactly one request should be sent.
         mock_resp_main = MagicMock(spec=httpx.Response)
         mock_resp_main.status_code = 200
         mock_resp_main.json.return_value = {
             "candidates": [{"content": {"parts": [{"text": "Final response"}]}}]
         }
-
-        mock_post.side_effect = [mock_resp_summary, mock_resp_main]
+        mock_post.return_value = mock_resp_main
 
         config.GOOGLE_API_KEYS = ["dummy_key"]
 
@@ -714,7 +719,10 @@ class TestLLMAdditional(unittest.IsolatedAsyncioTestCase):
             history=history
         )
         self.assertEqual(res[0], "Final response")
-        self.assertEqual(mock_post.call_count, 2)
+        self.assertEqual(mock_post.call_count, 1)
+
+        sent_contents = mock_post.call_args[1]["json"]["contents"]
+        self.assertLess(len(sent_contents), len(history))
 
     @patch("httpx.AsyncClient.post")
     async def test_ask_llm_vision_direct_and_openrouter(self, mock_post):
@@ -738,16 +746,22 @@ class TestLLMAdditional(unittest.IsolatedAsyncioTestCase):
         self.assertIn("inlineData", mock_post.call_args[1]["json"]["contents"][0]["parts"][1])
 
         mock_post.reset_mock()
-        mock_resp_fail = MagicMock(spec=httpx.Response)
-        mock_resp_fail.status_code = 500
-        mock_resp_fail.text = "Error"
-        
-        mock_resp_or = MagicMock(spec=httpx.Response)
-        mock_resp_or.status_code = 200
-        mock_resp_or.json.return_value = {
-            "choices": [{"message": {"content": "OpenRouter Vision Response"}}]
-        }
-        mock_post.side_effect = [mock_resp_fail, mock_resp_or]
+
+        # Every direct Gemini model attempt fails, regardless of how many
+        # models are in the fallback chain, so this only depends on the URL.
+        async def fail_then_openrouter(url, **kwargs):
+            resp = MagicMock(spec=httpx.Response)
+            if "generativelanguage" in url:
+                resp.status_code = 500
+                resp.text = "Error"
+            elif "openrouter.ai" in url:
+                resp.status_code = 200
+                resp.json.return_value = {
+                    "choices": [{"message": {"content": "OpenRouter Vision Response"}}]
+                }
+            return resp
+
+        mock_post.side_effect = fail_then_openrouter
 
         res_or = await llm.ask_llm(
             mode="general",
@@ -756,12 +770,14 @@ class TestLLMAdditional(unittest.IsolatedAsyncioTestCase):
             vision_prompt="Describe this image"
         )
         self.assertEqual(res_or[0], "OpenRouter Vision Response")
-        self.assertEqual(mock_post.call_count, 2)
 
     @patch("httpx.AsyncClient.post")
     async def test_ask_llm_no_google_keys(self, mock_post):
         config.GOOGLE_API_KEYS = []
         config.OPENROUTER_API_KEY = "openrouter_key"
+        # Groq sits between direct Gemini and OpenRouter in the fallback
+        # chain; disable it so this test isolates the OpenRouter path.
+        config.GROQ_API_KEY = ""
 
         mock_resp_or = MagicMock(spec=httpx.Response)
         mock_resp_or.status_code = 200
@@ -782,6 +798,7 @@ class TestLLMAdditional(unittest.IsolatedAsyncioTestCase):
     async def test_ask_llm_empty_gemini_contents(self, mock_post):
         config.GOOGLE_API_KEYS = ["dummy_key"]
         config.OPENROUTER_API_KEY = "openrouter_key"
+        config.GROQ_API_KEY = ""
 
         mock_resp_or = MagicMock(spec=httpx.Response)
         mock_resp_or.status_code = 200

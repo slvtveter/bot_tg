@@ -4,8 +4,8 @@ import unittest
 from unittest.mock import patch, AsyncMock, MagicMock
 import httpx
 
-import config
-import llm
+from src import config
+from src import llm
 
 
 class TestLLMRouter(unittest.IsolatedAsyncioTestCase):
@@ -163,11 +163,14 @@ class TestLLMRouter(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("key=bad_key" in url for url in call_urls))
         self.assertTrue(any("key=good_key" in url for url in call_urls))
 
-        # Check that bad_key was placed on cooldown
-        self.assertIn("bad_key", llm.key_pool.cooldowns)
-        self.assertGreater(llm.key_pool.cooldowns["bad_key"], time.time())
+        # Check that bad_key was placed on cooldown (cooldowns are keyed by
+        # (key, model) pairs now, so look for any entry for "bad_key")
+        bad_key_cooldowns = [v for (k, _m), v in llm.key_pool.cooldowns.items() if k == "bad_key"]
+        self.assertTrue(bad_key_cooldowns)
+        self.assertGreater(bad_key_cooldowns[0], time.time())
         # good_key should NOT be on cooldown
-        self.assertNotIn("good_key", llm.key_pool.cooldowns)
+        good_key_cooldowns = [k for (k, _m) in llm.key_pool.cooldowns if k == "good_key"]
+        self.assertFalse(good_key_cooldowns)
 
     @patch("httpx.AsyncClient.post")
     async def test_gemini_safety_block_fallback_to_openrouter(self, mock_post):
@@ -307,9 +310,10 @@ class TestLLMRouter(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response_text, "OpenRouter output")
         self.assertIn("OpenRouter", model_name)
-        # Verify both keys are placed on cooldown
-        self.assertIn("gemini_key1", llm.key_pool.cooldowns)
-        self.assertIn("gemini_key2", llm.key_pool.cooldowns)
+        # Verify both keys are placed on cooldown for at least one model
+        cooled_keys = {k for (k, _m) in llm.key_pool.cooldowns}
+        self.assertIn("gemini_key1", cooled_keys)
+        self.assertIn("gemini_key2", cooled_keys)
 
     @patch("httpx.AsyncClient.post")
     async def test_openrouter_missing_tokens_estimation(self, mock_post):
@@ -383,49 +387,54 @@ class TestLLMRouter(unittest.IsolatedAsyncioTestCase):
         )
         
         self.assertIsNone(response_text)
-        self.assertIn("bad_gemini_key", llm.key_pool.cooldowns)
+        # An invalid API key is bad for every model, so it's cooled down
+        # globally under (key, None).
+        self.assertIn(("bad_gemini_key", None), llm.key_pool.cooldowns)
 
     @patch("httpx.AsyncClient.post")
-    async def test_gemini_active_keys_retrieved_per_model_loop(self, mock_post):
+    async def test_gemini_key_cooldown_is_scoped_per_model(self, mock_post):
+        # A key that gets cooled down on one model must still be tried on the
+        # NEXT model - cooldowns are per (key, model), not per key globally
+        # (see KeyPool docstring in src/llm.py). gemini-2.0-flash-lite is
+        # first in the quota-priority model order.
         config.GOOGLE_API_KEYS = ["key_A", "key_B"]
         config.OPENROUTER_API_KEY = ""
-        
+
         calls = []
         async def side_effect(url, json=None, **kwargs):
             parts = url.split("/models/")
             model_part = parts[1].split(":")[0]
             key_part = url.split("key=")[1]
             calls.append((model_part, key_part))
-            
+
             resp = MagicMock(spec=httpx.Response)
-            if model_part == "gemini-2.5-flash-lite":
-                if key_part == "key_A":
-                    resp.status_code = 403
-                    resp.text = "Forbidden"
-                else:
-                    resp.status_code = 200
-                    resp.json.return_value = {"candidates": []}
+            if model_part == "gemini-2.0-flash-lite":
+                resp.status_code = 403
+                resp.text = "Forbidden"
             else:
                 resp.status_code = 200
                 resp.json.return_value = {
                     "candidates": [{"content": {"parts": [{"text": "Flash Success"}]}, "finishReason": "STOP"}]
                 }
             return resp
-            
+
         mock_post.side_effect = side_effect
-        
+
         with patch("random.shuffle", lambda x: None):
             response_text, model_name, _, _, _ = await llm.ask_llm(
                 mode="general",
                 history=[{"role": "user", "content": "Hello"}],
             )
-            
+
         self.assertEqual(response_text, "Flash Success")
-        self.assertIn("gemini-2.5-flash", model_name)
-        
-        for model_part, key_part in calls:
-            if model_part == "gemini-2.5-flash":
-                self.assertEqual(key_part, "key_B")
+        self.assertIn("gemini-2.0-flash", model_name)
+
+        # Both keys were cooled down on gemini-2.0-flash-lite specifically...
+        self.assertIn(("key_A", "gemini-2.0-flash-lite"), llm.key_pool.cooldowns)
+        self.assertIn(("key_B", "gemini-2.0-flash-lite"), llm.key_pool.cooldowns)
+        # ...but key_A (tried first, shuffle disabled) still succeeded on the
+        # very next model instead of being skipped as globally dead.
+        self.assertIn(("gemini-2.0-flash", "key_A"), calls)
 
     @patch("httpx.AsyncClient.post")
     async def test_individual_token_estimation(self, mock_post):

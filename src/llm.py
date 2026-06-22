@@ -106,17 +106,33 @@ SYSTEM_PROMPTS = {
 
 
 class KeyPool:
-    def __init__(self) -> None:
-        self.cooldowns: Dict[str, float] = {}
+    """
+    Tracks cooldowns per (key, model) pair, not just per key. A key that hits
+    its daily quota on gemini-2.5-flash still has plenty of quota left on
+    gemini-2.0-flash-lite (each model has its own daily limit on the same
+    project), so blacklisting the whole key globally for one model's failure
+    was needlessly throwing away working capacity and forcing more key/model
+    combinations to be tried - which is what stretched a single reply out to
+    20-60s once any model in the chain ran dry. model=None is used for
+    failures that really are key-wide (e.g. an invalid API key).
+    """
 
-    def get_active_keys(self) -> List[str]:
+    def __init__(self) -> None:
+        self.cooldowns: Dict[Tuple[str, Optional[str]], float] = {}
+
+    def get_active_keys(self, model: Optional[str] = None) -> List[str]:
         keys = config.GOOGLE_API_KEYS
         now = time.time()
-        active = [k for k in keys if self.cooldowns.get(k, 0.0) < now]
+        active = [
+            k
+            for k in keys
+            if self.cooldowns.get((k, model), 0.0) < now
+            and self.cooldowns.get((k, None), 0.0) < now
+        ]
         return active if active else keys
 
-    def fail_key(self, key: str, duration: int = 300) -> None:
-        self.cooldowns[key] = time.time() + duration
+    def fail_key(self, key: str, duration: int = 300, model: Optional[str] = None) -> None:
+        self.cooldowns[(key, model)] = time.time() + duration
 
 
 key_pool = KeyPool()
@@ -442,24 +458,29 @@ async def _ask_llm_uncapped(
     if not image_base64 and not is_summarizing and history:
         history = trim_history(history)
 
-    # Models to try, ordered SPEED-FIRST: gemini-2.5-flash leads because it is
-    # both fast (~1s) and high quality; lite/2.0 tiers follow as fallbacks; the
-    # newer "preview" and "pro" models sit lower because they are slower and
-    # spikier (measured up to ~13s). A request that exhausts one model's daily
-    # quota still has a long chain to fall through (several projects share keys).
+    # Models to try, ordered QUOTA-FIRST: the free tier's per-model daily quota
+    # varies a lot more than its per-call latency does (observed ~20 req/day on
+    # gemini-2.5-flash vs ~1000/day on the 2.0 tier on this account). Trying a
+    # tight-quota model first means it runs dry early in the day and every
+    # later request has to burn through a 429 on every key before falling
+    # through - that retry chain, not server/network latency, is what produced
+    # the 20-60s replies seen in production. Leading with the high-quota 2.0
+    # models means most requests succeed on the very first attempt; the
+    # higher-quality but quota-scarce 2.5/3.x models and the slower "preview"/
+    # "pro" tiers are kept as fallbacks further down the list.
     media_base64 = image_base64 or audio_base64
     media_mime_type = "image/jpeg" if image_base64 else audio_mime_type
 
     if media_base64:
         # Vision/audio models (all support multimodal input)
         direct_models = [
-            "gemini-2.5-flash",
-            "gemini-2.5-flash-lite",
+            "gemini-2.0-flash-lite",
             "gemini-2.0-flash",
+            "gemini-2.5-flash-lite",
             "gemini-flash-latest",
             "gemini-3.1-flash-lite",
+            "gemini-2.5-flash",
             "gemini-3-flash-preview",
-            "gemini-2.0-flash-lite",
             "gemini-2.5-pro",
         ]
         openrouter_models = [
@@ -485,13 +506,13 @@ async def _ask_llm_uncapped(
     else:
         # Text models
         direct_models = [
-            "gemini-2.5-flash",
-            "gemini-2.5-flash-lite",
+            "gemini-2.0-flash-lite",
             "gemini-2.0-flash",
+            "gemini-2.5-flash-lite",
             "gemini-flash-latest",
             "gemini-3.1-flash-lite",
+            "gemini-2.5-flash",
             "gemini-3-flash-preview",
-            "gemini-2.0-flash-lite",
             "gemini-2.5-pro",
         ]
         openrouter_models = [
@@ -522,7 +543,7 @@ async def _ask_llm_uncapped(
     if key_pool.get_active_keys():
         async with _shared_http() as client:
             for model in direct_models:
-                active_keys = key_pool.get_active_keys()
+                active_keys = key_pool.get_active_keys(model=model)
                 if not active_keys:
                     continue
                 shuffled_keys = active_keys.copy()
@@ -680,20 +701,30 @@ async def _ask_llm_uncapped(
                         if response.status_code in (429, 403, 500, 503) or (
                             response.status_code == 400 and "API key not valid" in response.text
                         ):
-                            # Tune cooldown by failure type: a 429 is usually a
-                            # per-minute rate limit that clears in ~60s; an invalid
-                            # key won't recover soon (back off long); other 5xx/403
-                            # use the middle default.
-                            if response.status_code == 429:
-                                cooldown = 60
-                            elif response.status_code == 400:
-                                cooldown = 600
-                            else:
-                                cooldown = 300
-                            logger.warning(
-                                f"Putting key {key[:8]} on {cooldown}s cooldown due to status {response.status_code}"
+                            invalid_key = (
+                                response.status_code == 400
+                                and "API key not valid" in response.text
                             )
-                            key_pool.fail_key(key, cooldown)
+                            if invalid_key:
+                                # The key itself is bad for every model - back
+                                # off long and globally (model=None).
+                                cooldown, cooldown_model = 600, None
+                            elif response.status_code == 429 and "perday" in response.text.lower():
+                                # Daily quota exhausted on THIS model only -
+                                # retrying within the same day is pointless, so
+                                # back off long, but scoped to this model so the
+                                # key keeps serving other models normally.
+                                cooldown, cooldown_model = 21600, model
+                            elif response.status_code == 429:
+                                # Ordinary per-minute rate limit, clears fast.
+                                cooldown, cooldown_model = 60, model
+                            else:
+                                cooldown, cooldown_model = 300, model
+                            logger.warning(
+                                f"Putting key {key[:8]} on {cooldown}s cooldown "
+                                f"(model={cooldown_model}) due to status {response.status_code}"
+                            )
+                            key_pool.fail_key(key, cooldown, model=cooldown_model)
 
                     except Exception as e:
                         logger.error(f"Error calling direct Gemini ({model}): {e}")

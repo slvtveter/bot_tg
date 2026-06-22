@@ -7,13 +7,13 @@ import json
 import httpx
 
 # Ensure project root is in python path
-project_dir = "/Users/slvtveter/Desktop/PycharmProjects/bot_tg"
+project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(project_dir)
 
-import database
-import utils
-import llm
-import config
+from src import database
+from src import utils
+from src import llm
+from src import config
 
 DB_PATH = os.path.join(project_dir, "tests_tmp", "benchmark_bot.db")
 

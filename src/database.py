@@ -269,6 +269,13 @@ async def init_db(db_path: str = DB_PATH) -> None:
                 await db.execute(
                     "ALTER TABLE users ADD COLUMN language TEXT DEFAULT 'ru';"
                 )
+            if "created_at" not in existing_columns:
+                # Pre-dates even the created_at column (very old legacy DBs);
+                # add it nullable since SQLite can't add a CURRENT_TIMESTAMP
+                # default after the fact.
+                logger.info("Migrating users table: adding created_at column")
+                await db.execute("ALTER TABLE users ADD COLUMN created_at TIMESTAMP;")
+                existing_columns.add("created_at")
             if "last_seen" not in existing_columns:
                 # SQLite can't ADD COLUMN with a CURRENT_TIMESTAMP default, so add
                 # it nullable and backfill existing rows from created_at.

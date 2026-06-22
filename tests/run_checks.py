@@ -4,9 +4,9 @@ import sys
 
 
 def run_tests():
-    project_dir = "/Users/slvtveter/Desktop/PycharmProjects/bot_tg"
-    venv_python = os.path.join(project_dir, ".venv", "bin", "python")
-    test_suite_path = os.path.join(project_dir, "tests", "test_suite.py")
+    project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    venv_python_candidate = os.path.join(project_dir, ".venv", "bin", "python")
+    venv_python = venv_python_candidate if os.path.exists(venv_python_candidate) else sys.executable
 
     print("=" * 60)
     print("🚀 Starting Test Runner (20 Iterations loop to check for flakiness) ...")
