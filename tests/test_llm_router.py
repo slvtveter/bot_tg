@@ -395,7 +395,7 @@ class TestLLMRouter(unittest.IsolatedAsyncioTestCase):
     async def test_gemini_key_cooldown_is_scoped_per_model(self, mock_post):
         # A key that gets cooled down on one model must still be tried on the
         # NEXT model - cooldowns are per (key, model), not per key globally
-        # (see KeyPool docstring in src/llm.py). gemini-2.0-flash-lite is
+        # (see KeyPool docstring in src/llm.py). gemini-3.1-flash-lite is
         # first in the quota-priority model order.
         config.GOOGLE_API_KEYS = ["key_A", "key_B"]
         config.OPENROUTER_API_KEY = ""
@@ -408,7 +408,7 @@ class TestLLMRouter(unittest.IsolatedAsyncioTestCase):
             calls.append((model_part, key_part))
 
             resp = MagicMock(spec=httpx.Response)
-            if model_part == "gemini-2.0-flash-lite":
+            if model_part == "gemini-3.1-flash-lite":
                 resp.status_code = 403
                 resp.text = "Forbidden"
             else:
@@ -429,12 +429,12 @@ class TestLLMRouter(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response_text, "Flash Success")
         self.assertIn("gemini-2.0-flash", model_name)
 
-        # Both keys were cooled down on gemini-2.0-flash-lite specifically...
-        self.assertIn(("key_A", "gemini-2.0-flash-lite"), llm.key_pool.cooldowns)
-        self.assertIn(("key_B", "gemini-2.0-flash-lite"), llm.key_pool.cooldowns)
+        # Both keys were cooled down on gemini-3.1-flash-lite specifically...
+        self.assertIn(("key_A", "gemini-3.1-flash-lite"), llm.key_pool.cooldowns)
+        self.assertIn(("key_B", "gemini-3.1-flash-lite"), llm.key_pool.cooldowns)
         # ...but key_A (tried first, shuffle disabled) still succeeded on the
         # very next model instead of being skipped as globally dead.
-        self.assertIn(("gemini-2.0-flash", "key_A"), calls)
+        self.assertIn(("gemini-2.0-flash-lite", "key_A"), calls)
 
     @patch("httpx.AsyncClient.post")
     async def test_individual_token_estimation(self, mock_post):

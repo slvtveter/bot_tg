@@ -471,13 +471,18 @@ async def _ask_llm_uncapped(
         history = trim_history(history)
 
     # Models to try, ordered QUOTA-FIRST: the free tier's per-model daily quota
-    # varies a lot more than its per-call latency does (observed ~20 req/day on
-    # gemini-2.5-flash vs ~1000/day on the 2.0 tier on this account). Trying a
-    # tight-quota model first means it runs dry early in the day and every
-    # later request has to burn through a 429 on every key before falling
-    # through - that retry chain, not server/network latency, is what produced
-    # the 20-60s replies seen in production. Leading with the high-quota 2.0
-    # models means most requests succeed on the very first attempt; the
+    # varies a lot more than its per-call latency does, and a tight-quota model
+    # tried first runs dry early in the day, forcing every later request to
+    # burn through a 429 on every key before falling through - that retry
+    # chain (not server/network latency) is what produced the slow replies
+    # seen in production. gemini-3.1-flash-lite leads the list: per the AI
+    # Studio console it gets 500 req/day *per key* with a 250k context window,
+    # and key_pool tries every active key for a model before moving to the
+    # next model (see the key loop below), so with 3 Google keys configured
+    # that's ~1500 req/day on one fast model before anything else is even
+    # tried. The 2.0 tier was assumed higher-quota than that but production
+    # logs showed it (and 2.5-flash-lite) hitting daily quota 429s on every
+    # key well before 3.1-flash-lite did, so it now sits behind it; the
     # higher-quality but quota-scarce 2.5/3.x models and the slower "preview"/
     # "pro" tiers are kept as fallbacks further down the list.
     media_base64 = image_base64 or audio_base64
@@ -486,11 +491,11 @@ async def _ask_llm_uncapped(
     if media_base64:
         # Vision/audio models (all support multimodal input)
         direct_models = [
+            "gemini-3.1-flash-lite",
             "gemini-2.0-flash-lite",
             "gemini-2.0-flash",
             "gemini-2.5-flash-lite",
             "gemini-flash-latest",
-            "gemini-3.1-flash-lite",
             "gemini-2.5-flash",
             "gemini-3-flash-preview",
             "gemini-2.5-pro",
@@ -518,11 +523,11 @@ async def _ask_llm_uncapped(
     else:
         # Text models
         direct_models = [
+            "gemini-3.1-flash-lite",
             "gemini-2.0-flash-lite",
             "gemini-2.0-flash",
             "gemini-2.5-flash-lite",
             "gemini-flash-latest",
-            "gemini-3.1-flash-lite",
             "gemini-2.5-flash",
             "gemini-3-flash-preview",
             "gemini-2.5-pro",
