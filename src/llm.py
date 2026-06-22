@@ -151,13 +151,25 @@ _LLM_SEMAPHORE = asyncio.Semaphore(config.LLM_MAX_CONCURRENCY)
 # One shared httpx client for all LLM HTTP calls, reused across requests so we
 # don't pay TLS/connection setup on every call. Created lazily inside the running
 # event loop and kept for the process lifetime (the recommended httpx pattern).
+#
+# Timeout is intentionally tight: when a model is overloaded, Google's API can
+# sit on the connection for 15s+ before returning a 503 instead of failing
+# fast, and with a 30s client timeout that single call ate most of a reply's
+# latency budget while several other working fallbacks sat untried. There are
+# always more models/keys left in the chain, so failing one slow call quickly
+# and moving on beats waiting it out.
 _http_client: Optional[httpx.AsyncClient] = None
+_FAST_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
+# gemini-2.5-pro and math mode deliberately keep "thinking" on (see
+# THINKING_CONTROL_MODELS/THINKING_MODES below) and can legitimately take
+# longer than the fast path, so they get more rope.
+_THINKING_TIMEOUT = httpx.Timeout(25.0, connect=5.0)
 
 
 def _get_http_client() -> httpx.AsyncClient:
     global _http_client
     if _http_client is None or _http_client.is_closed:
-        _http_client = httpx.AsyncClient(timeout=30.0)
+        _http_client = httpx.AsyncClient(timeout=_FAST_TIMEOUT)
     return _http_client
 
 
@@ -557,6 +569,12 @@ async def _ask_llm_uncapped(
                 if mode not in THINKING_MODES and model in THINKING_CONTROL_MODELS:
                     generation_config["thinkingConfig"] = {"thinkingBudget": 0}
 
+                call_timeout = (
+                    _THINKING_TIMEOUT
+                    if mode in THINKING_MODES or model == "gemini-2.5-pro"
+                    else _FAST_TIMEOUT
+                )
+
                 for key in shuffled_keys:
                     try:
                         logger.info(
@@ -626,7 +644,9 @@ async def _ask_llm_uncapped(
                             ]
                         logger.info(f"Gemini API request payload: {payload_log}")
 
-                        response = await client.post(url, json=payload)
+                        response = await client.post(
+                            url, json=payload, timeout=call_timeout
+                        )
 
                         if response.status_code == 200:
                             data = response.json()
