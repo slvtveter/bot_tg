@@ -180,7 +180,7 @@ def main():
 
     # Register Callback Query Handlers
     app.add_handler(
-        CallbackQueryHandler(settings_callback, pattern="^settings_toggle_")
+        CallbackQueryHandler(settings_callback, pattern="^settings_")
     )
     app.add_handler(CallbackQueryHandler(mode_callback, pattern="^mode_"))
     app.add_handler(CallbackQueryHandler(admin_callback, pattern="^admin_"))

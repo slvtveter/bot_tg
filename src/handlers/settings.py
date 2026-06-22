@@ -1,9 +1,15 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from src.database import get_user_settings, set_user_setting
+from src.database import (
+    clear_chat_history,
+    get_user_language,
+    get_user_mode,
+    get_user_settings,
+    set_user_setting,
+)
 from src.handlers.commands import build_main_keyboard
-from src.i18n import creativity_value, language_value, length_value, t
+from src.i18n import creativity_value, language_value, length_value, t, util_label
 
 
 def get_settings_keyboard(settings: dict, lang: str) -> InlineKeyboardMarkup:
@@ -31,6 +37,14 @@ def get_settings_keyboard(settings: dict, lang: str) -> InlineKeyboardMarkup:
                 callback_data="settings_toggle_language",
             )
         ],
+        [
+            InlineKeyboardButton(
+                util_label("stats", lang), callback_data="settings_stats"
+            ),
+            InlineKeyboardButton(
+                util_label("clear", lang), callback_data="settings_clear"
+            ),
+        ],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -56,7 +70,21 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await query.answer()
 
     user_id = query.from_user.id
-    data = query.data
+    data = query.data or ""
+
+    # Stats and Clear-chat now live inside the Settings panel.
+    if data == "settings_stats":
+        from src.handlers.commands import build_stats_text
+
+        lang = await get_user_language(user_id)
+        await query.message.reply_html(await build_stats_text(user_id, lang))
+        return
+    if data == "settings_clear":
+        lang = await get_user_language(user_id)
+        await clear_chat_history(user_id)
+        await query.message.reply_html(t("clear_done", lang))
+        return
+
     if not data.startswith("settings_toggle_"):
         return
 
@@ -99,8 +127,9 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     # The bottom reply keyboard can't be edited in place, so on a language switch
     # send a fresh one so the whole interface follows the new language.
     if language_changed:
+        current_mode = await get_user_mode(user_id)
         await context.bot.send_message(
             chat_id=user_id,
             text=t("language_switched", lang),
-            reply_markup=build_main_keyboard(lang),
+            reply_markup=build_main_keyboard(lang, current_mode),
         )

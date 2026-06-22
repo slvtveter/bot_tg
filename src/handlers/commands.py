@@ -31,16 +31,14 @@ from src.i18n import (
 )
 
 
-def build_main_keyboard(lang: str) -> ReplyKeyboardMarkup:
+def build_main_keyboard(lang: str, current_mode: str = DEFAULT_MODE) -> ReplyKeyboardMarkup:
     """
-    Bottom reply keyboard in the user's language: all modes (3 per row) followed
-    by a row of utility shortcuts.
+    Minimal bottom keyboard: a single mode-toggle button (its label shows the
+    CURRENT mode; tapping it switches between the smart default and Nutrition)
+    plus Settings. Stats and Clear now live inside the Settings panel.
     """
-    labels = [mode_label(m, lang) for m in VISIBLE_MODES]
-    rows = [labels]
-    rows.append(
-        [util_label("settings", lang), util_label("stats", lang), util_label("clear", lang)]
-    )
+    toggle = f"🔄 {mode_label(current_mode, lang)}"
+    rows = [[toggle, util_label("settings", lang)]]
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
@@ -74,14 +72,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     lang = await get_user_language(user.id)
     current_mode = await get_user_mode(user.id)
 
-    welcome_text = t(
-        "welcome",
-        lang,
-        name=html.escape(user.first_name or ""),
-        modes=mode_overview(lang),
-        current=mode_title(current_mode, lang),
+    welcome_text = t("welcome", lang, name=html.escape(user.first_name or ""))
+    await update.message.reply_html(
+        welcome_text, reply_markup=build_main_keyboard(lang, current_mode)
     )
-    await update.message.reply_html(welcome_text, reply_markup=build_main_keyboard(lang))
 
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -156,19 +150,16 @@ async def mode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
 
 
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Displays the user's lifetime activity stats and per-model breakdown."""
-    user = update.effective_user
-    if not user or not update.message:
-        return
-
-    lang = await get_user_language(user.id)
-    stats = await get_usage_stats(user_id=user.id)
-    activity = await get_user_activity_summary(user_id=user.id)
+async def build_stats_text(user_id: int, lang: str) -> str:
+    """
+    Builds the localized lifetime-stats message for a user. Shared by the /stats
+    command and the Statistics button inside the Settings panel.
+    """
+    stats = await get_usage_stats(user_id=user_id)
+    activity = await get_user_activity_summary(user_id=user_id)
 
     if stats["total_requests"] == 0 and activity["request_count"] == 0:
-        await update.message.reply_html(t("stats_none", lang))
-        return
+        return t("stats_none", lang)
 
     member_since = (activity["member_since"] or "").split(" ")[0]
     last_seen = (activity["last_seen"] or "").split(" ")[0]
@@ -187,7 +178,17 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         for model, m_data in stats["model_stats"].items():
             response += f"- <b>{html.escape(model)}</b>: <code>{m_data['requests']}</code>\n"
 
-    await update.message.reply_html(response)
+    return response
+
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Displays the user's lifetime activity stats and per-model breakdown."""
+    user = update.effective_user
+    if not user or not update.message:
+        return
+
+    lang = await get_user_language(user.id)
+    await update.message.reply_html(await build_stats_text(user.id, lang))
 
 
 async def feedback_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

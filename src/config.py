@@ -33,11 +33,11 @@ if not GOOGLE_API_KEYS and not OPENROUTER_API_KEY and not GROQ_API_KEY:
 LLM_MAX_CONCURRENCY = int(os.getenv("LLM_MAX_CONCURRENCY", "6"))
 
 # Telegram send format. The native-Markdown 'sendRichMessage' API renders tables
-# and LaTeX beautifully on up-to-date clients, but on OLDER Telegram versions the
-# call SUCCEEDS while the message shows up BLANK (the user sees nothing, and the
-# bot can't tell). So the default send path is HTML, which every client renders.
-# Set USE_RICH_MESSAGE=true only if your whole audience is on current Telegram.
-USE_RICH_MESSAGE = os.getenv("USE_RICH_MESSAGE", "false").lower() in (
+# and LaTeX beautifully — this is the default. The trade-off: on OLDER Telegram
+# clients the call SUCCEEDS but the message shows BLANK. If old-client users
+# report missing messages, set USE_RICH_MESSAGE=false to fall back to universal
+# HTML (tables as monospace). Default true since the audience is mostly current.
+USE_RICH_MESSAGE = os.getenv("USE_RICH_MESSAGE", "true").lower() in (
     "1",
     "true",
     "yes",

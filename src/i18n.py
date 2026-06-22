@@ -149,7 +149,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
     "welcome": {
         "ru": (
             "Привет, {name}! 👋\n\n"
-            "Я твой ИИ-ассистент. Просто пиши, что нужно — посчитать, объяснить, "
+            "Я <b>Nela AI</b> — умный ИИ-ассистент. Просто пиши, что нужно — посчитать, объяснить, "
             "переписать текст, помочь с кодом, разобраться в чём угодно. Понимаю "
             "фото и голосовые.\n\n"
             "🍏 <b>Питание</b> — пришли фото блюда или опиши его: посчитаю калории "
@@ -159,7 +159,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
         ),
         "en": (
             "Hi, {name}! 👋\n\n"
-            "I'm your AI assistant. Just tell me what you need — calculate, explain, "
+            "I'm <b>Nela AI</b> — your smart AI assistant. Just tell me what you need — calculate, explain, "
             "rewrite text, help with code, figure anything out. I understand photos "
             "and voice messages.\n\n"
             "🍏 <b>Nutrition</b> — send a photo of your meal or describe it: I'll "
