@@ -12,6 +12,7 @@ import logging
 import httpx
 from telegram import Bot, Message
 
+from src import config
 from src.utils import normalize_markdown_tables, to_telegram_html
 
 logger = logging.getLogger(__name__)
@@ -44,18 +45,28 @@ async def send_response(
     # Pre-process and normalize any markdown tables in the response text
     text = normalize_markdown_tables(text)
 
-    # --- 1. Try sendRichMessage (native Markdown with LaTeX, tables, etc.) ---
-    try:
-        result = await _send_rich_message(
-            bot, chat_id, text, reply_to_message_id, reply_markup
-        )
-        if result:
-            logger.info("Sent response via sendRichMessage (markdown)")
-            return result
-    except Exception as e:
-        logger.warning(f"sendRichMessage failed: {e}")
+    # --- 1. (Opt-in) sendRichMessage: native Markdown/LaTeX/tables ---
+    # OFF by default. It renders beautifully on up-to-date Telegram, but on
+    # OLDER clients the API call SUCCEEDS while the message displays blank - the
+    # user sees nothing and the bot can't detect the failure to fall back. Enable
+    # only via USE_RICH_MESSAGE when the whole audience is on current Telegram.
+    if config.USE_RICH_MESSAGE:
+        try:
+            result = await _send_rich_message(
+                bot, chat_id, text, reply_to_message_id, reply_markup
+            )
+            if result:
+                logger.info("Sent response via sendRichMessage (markdown)")
+                return result
+        except Exception as e:
+            logger.warning(f"sendRichMessage failed: {e}")
 
-    # --- 2. Fallback: sendMessage with HTML formatting ---
+    # --- 2. Default: sendMessage with HTML formatting ---
+    # HTML parse_mode is rendered by EVERY Telegram client, old and new, so this
+    # is the reliable default: it keeps bold/italic/code/links and shows tables
+    # and formulas as monospace blocks (readable everywhere). If the converter
+    # ever produces HTML Telegram rejects, we fall through to plain text below -
+    # so the worst case is an unformatted message, never a blank one.
     try:
         formatted_html = to_telegram_html(text)
         msg = await bot.send_message(
@@ -65,10 +76,10 @@ async def send_response(
             reply_to_message_id=reply_to_message_id,
             reply_markup=reply_markup,
         )
-        logger.info("Sent response via sendMessage (HTML fallback)")
+        logger.info("Sent response via sendMessage (HTML)")
         return msg
     except Exception as e:
-        logger.warning(f"sendMessage HTML fallback failed: {e}")
+        logger.warning(f"sendMessage HTML failed: {e}")
 
     # --- 3. Last resort: plain text without any formatting ---
     try:

@@ -17,12 +17,32 @@ GOOGLE_API_KEYS = [k.strip() for k in raw_google_keys.split(",") if k.strip()]
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 
-# Validate that at least one LLM key is configured
-if not GOOGLE_API_KEYS and not OPENROUTER_API_KEY:
+# Groq (OpenAI-compatible, very fast, generous free tier). Used as a fallback
+# tier between direct Gemini and OpenRouter. Left empty disables that tier.
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+
+# Validate that at least one LLM provider is configured
+if not GOOGLE_API_KEYS and not OPENROUTER_API_KEY and not GROQ_API_KEY:
     raise ValueError(
-        "No LLM API keys configured! Please set GOOGLE_API_KEYS or "
-        "OPENROUTER_API_KEY in the environment variables or .env file."
+        "No LLM API keys configured! Please set GOOGLE_API_KEYS, GROQ_API_KEY "
+        "or OPENROUTER_API_KEY in the environment variables or .env file."
     )
+
+# Upper bound on concurrent outbound LLM calls. Bounds how hard a burst of users
+# can hit the shared Gemini key pool at once (see src/llm.py _LLM_SEMAPHORE).
+LLM_MAX_CONCURRENCY = int(os.getenv("LLM_MAX_CONCURRENCY", "6"))
+
+# Telegram send format. The native-Markdown 'sendRichMessage' API renders tables
+# and LaTeX beautifully on up-to-date clients, but on OLDER Telegram versions the
+# call SUCCEEDS while the message shows up BLANK (the user sees nothing, and the
+# bot can't tell). So the default send path is HTML, which every client renders.
+# Set USE_RICH_MESSAGE=true only if your whole audience is on current Telegram.
+USE_RICH_MESSAGE = os.getenv("USE_RICH_MESSAGE", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 
 # Parse admin IDs list
 raw_admin_ids = os.getenv("ADMIN_IDS", "")

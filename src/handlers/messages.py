@@ -5,9 +5,8 @@ from telegram.ext import ContextTypes
 
 from src.database import (
     get_chat_history,
+    get_user_context,
     get_user_language,
-    get_user_mode,
-    get_user_settings,
     log_message,
     log_usage_stats,
     set_user_mode,
@@ -63,16 +62,20 @@ async def process_text_message(
     routes it through the Orchestrator for the user's current mode, logs the
     reply and usage stats, and sends the response back to Telegram.
     """
-    # 1. Query user's current mode
-    mode = await get_user_mode(user_id=user_id)
+    # 1. Fetch mode + settings (length/creativity/language) in ONE query to cut
+    # per-message round-trips to the remote DB.
+    ctx = await get_user_context(user_id=user_id)
+    mode = ctx["mode"]
+    settings = {
+        "max_length": ctx["max_length"],
+        "creativity": ctx["creativity"],
+        "language": ctx["language"],
+    }
 
     # 2. Retrieve recent history BEFORE logging the new message, so the model
     # gets the prior turns as context and the current message isn't duplicated
     # (the agent appends it once). The history is token-trimmed inside ask_llm.
     history = await get_chat_history(user_id=user_id, limit=20)
-
-    # 3. Retrieve settings
-    settings = await get_user_settings(user_id=user_id)
 
     # 4. Log the user's message now that prior history has been captured
     await log_message(user_id=user_id, role="user", content=text)

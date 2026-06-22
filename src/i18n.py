@@ -49,6 +49,13 @@ _MODES: Dict[str, Dict[str, str]] = {
 MODE_KEYS: List[str] = list(_MODES.keys())
 DEFAULT_MODE = "general"
 
+# Modes surfaced in the UI (bottom keyboard + /mode picker). All six prompts
+# still exist and work internally, but the product is now "one smart default
+# assistant + Nutrition as the single flagship tool": the default brain already
+# handles math/code/writing/general well without the user picking a mode, so only
+# these two are shown. Add a key here to re-expose another mode as a button.
+VISIBLE_MODES: List[str] = ["general", "nutrition"]
+
 # Bottom-keyboard utility buttons (not modes).
 _UTIL = {
     "settings": {"ru": "⚙️ Настройки", "en": "⚙️ Settings"},
@@ -142,15 +149,23 @@ STRINGS: Dict[str, Dict[str, str]] = {
     "welcome": {
         "ru": (
             "Привет, {name}! 👋\n\n"
-            "Я твой персональный ИИ-ассистент. Доступные режимы:\n\n{modes}\n\n"
-            "Текущий режим: {current}. Переключай режимы кнопками снизу или командой "
-            "/mode. Можно присылать фото и голосовые — я их пойму. Справка — /help."
+            "Я твой ИИ-ассистент. Просто пиши, что нужно — посчитать, объяснить, "
+            "переписать текст, помочь с кодом, разобраться в чём угодно. Понимаю "
+            "фото и голосовые.\n\n"
+            "🍏 <b>Питание</b> — пришли фото блюда или опиши его: посчитаю калории "
+            "и БЖУ и буду вести дневник (/week — итоги за неделю). Включается "
+            "кнопкой снизу.\n\n"
+            "Справка — /help."
         ),
         "en": (
             "Hi, {name}! 👋\n\n"
-            "I'm your personal AI assistant. Available modes:\n\n{modes}\n\n"
-            "Current mode: {current}. Switch modes with the buttons below or the "
-            "/mode command. You can also send photos and voice messages. Help — /help."
+            "I'm your AI assistant. Just tell me what you need — calculate, explain, "
+            "rewrite text, help with code, figure anything out. I understand photos "
+            "and voice messages.\n\n"
+            "🍏 <b>Nutrition</b> — send a photo of your meal or describe it: I'll "
+            "count calories and macros and keep a diary (/week for weekly totals). "
+            "Turn it on with the button below.\n\n"
+            "Help — /help."
         ),
     },
     "mode_changed": {
@@ -270,13 +285,11 @@ STRINGS: Dict[str, Dict[str, str]] = {
     "help": {
         "ru": (
             "❓ <b>Справка</b>\n\n"
-            "<b>Режимы</b> (переключаются кнопками снизу или командой /mode):\n{modes}\n\n"
-            "<b>Как пользоваться</b>\n"
-            "Просто напишите сообщение — бот ответит в текущем режиме. Можно присылать "
-            "фото (например, блюдо в режиме Питание или скриншот кода в режиме Код) и "
-            "голосовые — они распознаются автоматически.\n\n"
+            "Просто напиши сообщение — я помогу с вопросами, текстом, кодом, "
+            "математикой и объяснениями. Понимаю фото и голосовые.\n\n"
+            "🍏 <b>Питание</b> (кнопка снизу) — пришли фото блюда или опиши его: дам "
+            "КБЖУ и буду вести дневник.\n\n"
             "<b>Команды</b>\n"
-            "/mode — выбрать режим\n"
             "/week — итоги питания за 7 дней\n"
             "/settings — длина ответов, креативность, язык\n"
             "/stats — ваша статистика\n"
@@ -287,13 +300,11 @@ STRINGS: Dict[str, Dict[str, str]] = {
         ),
         "en": (
             "❓ <b>Help</b>\n\n"
-            "<b>Modes</b> (switch with the buttons below or /mode):\n{modes}\n\n"
-            "<b>How to use</b>\n"
-            "Just send a message — the bot replies in the current mode. You can send "
-            "photos (e.g. a dish in Nutrition mode or a code screenshot in Code mode) "
-            "and voice messages — they're transcribed automatically.\n\n"
+            "Just send a message — I'll help with questions, writing, code, math and "
+            "explanations. I understand photos and voice messages.\n\n"
+            "🍏 <b>Nutrition</b> (button below) — send a photo of your meal or "
+            "describe it: I'll give calories/macros and keep a diary.\n\n"
             "<b>Commands</b>\n"
-            "/mode — choose a mode\n"
             "/week — nutrition over the last 7 days\n"
             "/settings — response length, creativity, language\n"
             "/stats — your stats\n"

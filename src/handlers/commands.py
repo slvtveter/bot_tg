@@ -22,7 +22,7 @@ from src.database import (
 )
 from src.i18n import (
     DEFAULT_MODE,
-    MODE_KEYS,
+    VISIBLE_MODES,
     mode_label,
     mode_overview,
     mode_title,
@@ -36,8 +36,8 @@ def build_main_keyboard(lang: str) -> ReplyKeyboardMarkup:
     Bottom reply keyboard in the user's language: all modes (3 per row) followed
     by a row of utility shortcuts.
     """
-    labels = [mode_label(m, lang) for m in MODE_KEYS]
-    rows = [labels[i:i + 3] for i in range(0, len(labels), 3)]
+    labels = [mode_label(m, lang) for m in VISIBLE_MODES]
+    rows = [labels]
     rows.append(
         [util_label("settings", lang), util_label("stats", lang), util_label("clear", lang)]
     )
@@ -49,9 +49,9 @@ def build_mode_inline_keyboard(lang: str) -> InlineKeyboardMarkup:
     rows = [
         [
             InlineKeyboardButton(mode_title(m, lang), callback_data=f"mode_{m}")
-            for m in MODE_KEYS[i:i + 2]
+            for m in VISIBLE_MODES[i:i + 2]
         ]
-        for i in range(0, len(MODE_KEYS), 2)
+        for i in range(0, len(VISIBLE_MODES), 2)
     ]
     return InlineKeyboardMarkup(rows)
 

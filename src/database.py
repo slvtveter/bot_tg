@@ -541,6 +541,41 @@ async def get_user_settings(user_id: int, db_path: str = DB_PATH) -> Dict[str, s
         return default_settings
 
 
+async def get_user_context(user_id: int, db_path: str = DB_PATH) -> Dict[str, str]:
+    """
+    Single-query fetch of everything the message hot path needs about a user:
+    current mode plus settings (max_length, creativity, language). Replaces a
+    separate get_user_mode + get_user_settings pair with one round trip, which
+    matters on the remote Turso backend where each query is an HTTP request.
+    Falls back to defaults on any error or missing row.
+    """
+    defaults = {
+        "mode": "general",
+        "max_length": "medium",
+        "creativity": "balanced",
+        "language": "ru",
+    }
+    try:
+        async with get_db_connection(db_path) as db:
+            async with db.execute(
+                "SELECT current_mode, max_length, creativity, language "
+                "FROM users WHERE user_id = ?",
+                (user_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    return {
+                        "mode": row[0] or "general",
+                        "max_length": row[1] or "medium",
+                        "creativity": row[2] or "balanced",
+                        "language": row[3] or "ru",
+                    }
+                return defaults
+    except Exception as e:
+        logger.warning(f"Error getting user context for {user_id}: {e}")
+        return defaults
+
+
 async def set_user_setting(
     user_id: int, setting_name: str, setting_value: str, db_path: str = DB_PATH
 ) -> None:

@@ -1,7 +1,9 @@
+import asyncio
 import logging
 import random
 import re
 import time
+from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
@@ -123,6 +125,31 @@ key_pool = KeyPool()
 # Toggled from the admin panel (src/handlers/admin.py).
 disabled_models: set = set()
 
+# Global concurrency cap for outbound LLM calls. A burst of users (or one user
+# firing several messages quickly) otherwise hammers the shared Gemini key pool
+# all at once and trips rate-limit cooldowns for everyone; bounding in-flight
+# calls keeps the pool healthy and latency predictable. Tunable via env.
+_LLM_SEMAPHORE = asyncio.Semaphore(config.LLM_MAX_CONCURRENCY)
+
+# One shared httpx client for all LLM HTTP calls, reused across requests so we
+# don't pay TLS/connection setup on every call. Created lazily inside the running
+# event loop and kept for the process lifetime (the recommended httpx pattern).
+_http_client: Optional[httpx.AsyncClient] = None
+
+
+def _get_http_client() -> httpx.AsyncClient:
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.AsyncClient(timeout=30.0)
+    return _http_client
+
+
+@asynccontextmanager
+async def _shared_http():
+    """Yield the shared httpx client without closing it, so existing
+    'async with ... as client:' call sites reuse one pooled connection pool."""
+    yield _get_http_client()
+
 # Newer Gemini "flash" models reason internally ("thinking") before answering.
 # That improves hard reasoning but, with a generous output budget, balloons to
 # hundreds of thought tokens and ~5-11s latency even on a trivial question. For
@@ -236,8 +263,12 @@ def is_response_complete(text: str) -> bool:
     if stripped.count("**") % 2 != 0:
         return False
 
-    # 3. Check for obvious trailing cutoff symbols (like commas, colons, or dashes/conjunctions)
-    if stripped.endswith((",", ":", "-", "—", "and", "or", "with", "для", "и", "в", "на", "с")):
+    # 3. Trailing cutoff: a dangling comma or colon is a strong sign the model
+    # was cut mid-sentence. (This used to also reject answers ending in a bare
+    # Cyrillic letter like "и"/"с" or any word without a final period, which
+    # false-flagged many perfectly complete replies and wasted a fallback hop —
+    # costing latency and shared quota — so those weak rules were removed.)
+    if stripped.endswith((",", ":")):
         return False
 
     # 4. Check for cut-off markdown table rows
@@ -252,25 +283,38 @@ def is_response_complete(text: str) -> bool:
                     return False
                 break
 
-    # 5. Check if the text is longer than 100 characters and ends with a word and no punctuation,
-    # excluding common unit abbreviations
-    last_word_match = re.search(r"\b([а-яА-ЯёЁa-zA-Z]+)\s*$", stripped)
-    if last_word_match:
-        last_word = last_word_match.group(1).lower()
-        allowed_units = {
-            "г", "г.", "ккал", "мл", "шт", "g", "kcal", "ml", "pcs",
-            "белки", "жиры", "углеводы", "калории",
-            "proteins", "fats", "carbs", "calories"
-        }
-        if last_word not in allowed_units:
-            # If no sentence-ending punctuation or markdown markers are at the end
-            if len(stripped) > 100 and not re.search(r"[.\!?*`_\)~\]\}\-\|>\b]\s*$", stripped):
-                return False
-
     return True
 
 
 async def ask_llm(
+    mode: str,
+    history: List[Dict[str, str]],
+    image_base64: Optional[str] = None,
+    vision_prompt: Optional[str] = None,
+    user_settings: Optional[Dict[str, str]] = None,
+    is_summarizing: bool = False,
+    audio_base64: Optional[str] = None,
+    audio_mime_type: str = "audio/ogg",
+) -> Tuple[Optional[str], Optional[str], int, int, float]:
+    """
+    Concurrency-capped entry point. A global semaphore bounds how many LLM
+    round-trips run at once, so a burst of users can't drive the shared key pool
+    into rate-limit cooldowns simultaneously. Delegates to the implementation.
+    """
+    async with _LLM_SEMAPHORE:
+        return await _ask_llm_uncapped(
+            mode=mode,
+            history=history,
+            image_base64=image_base64,
+            vision_prompt=vision_prompt,
+            user_settings=user_settings,
+            is_summarizing=is_summarizing,
+            audio_base64=audio_base64,
+            audio_mime_type=audio_mime_type,
+        )
+
+
+async def _ask_llm_uncapped(
     mode: str,
     history: List[Dict[str, str]],
     image_base64: Optional[str] = None,
@@ -475,7 +519,7 @@ async def ask_llm(
 
     # --- 1. Direct Gemini API calling with key rotation ---
     if key_pool.get_active_keys():
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with _shared_http() as client:
             for model in direct_models:
                 active_keys = key_pool.get_active_keys()
                 if not active_keys:
@@ -635,10 +679,20 @@ async def ask_llm(
                         if response.status_code in (429, 403, 500, 503) or (
                             response.status_code == 400 and "API key not valid" in response.text
                         ):
+                            # Tune cooldown by failure type: a 429 is usually a
+                            # per-minute rate limit that clears in ~60s; an invalid
+                            # key won't recover soon (back off long); other 5xx/403
+                            # use the middle default.
+                            if response.status_code == 429:
+                                cooldown = 60
+                            elif response.status_code == 400:
+                                cooldown = 600
+                            else:
+                                cooldown = 300
                             logger.warning(
-                                f"Putting key {key[:8]} on cooldown due to status {response.status_code}"
+                                f"Putting key {key[:8]} on {cooldown}s cooldown due to status {response.status_code}"
                             )
-                            key_pool.fail_key(key)
+                            key_pool.fail_key(key, cooldown)
 
                     except Exception as e:
                         logger.error(f"Error calling direct Gemini ({model}): {e}")
@@ -647,9 +701,82 @@ async def ask_llm(
                         )
                         key_pool.fail_key(key)
 
-    # --- 2. Fallback to OpenRouter ---
+    # --- 2. Fallback to Groq (fast, generous free tier, OpenAI-compatible) ---
+    # Placed before OpenRouter because Groq is markedly faster and its free tier
+    # is healthy. Text/chat only here; image/audio fall through to the next tier.
+    if config.GROQ_API_KEY and not media_base64:
+        groq_models = [
+            m
+            for m in (
+                "llama-3.3-70b-versatile",
+                "openai/gpt-oss-120b",
+                "llama-3.1-8b-instant",
+            )
+            if m not in disabled_models
+        ]
+        async with _shared_http() as client:
+            for model in groq_models:
+                try:
+                    logger.info(f"Trying Groq fallback ({model})...")
+                    url = "https://api.groq.com/openai/v1/chat/completions"
+                    headers = {
+                        "Authorization": f"Bearer {config.GROQ_API_KEY}",
+                        "Content-Type": "application/json",
+                    }
+                    messages = [
+                        {"role": "system", "content": system_prompt}
+                    ] + history
+                    payload = {
+                        "model": model,
+                        "messages": messages,
+                        "max_tokens": max_tokens,
+                        "temperature": temperature,
+                    }
+
+                    response = await client.post(url, headers=headers, json=payload)
+
+                    if response.status_code == 200:
+                        data = response.json()
+                        choices = data.get("choices", [])
+                        if choices and choices[0].get("message", {}).get("content"):
+                            text_response = choices[0]["message"]["content"]
+
+                            if model != groq_models[-1] and not is_response_complete(text_response):
+                                logger.warning(
+                                    f"Groq ({model}) returned incomplete/truncated response, trying next model."
+                                )
+                                continue
+
+                            latency = time.time() - start_time
+
+                            usage = data.get("usage", {})
+                            prompt_tokens = usage.get("prompt_tokens") or (
+                                estimate_history_tokens(history, system_prompt)
+                            )
+                            completion_tokens = usage.get("completion_tokens") or (
+                                estimate_tokens(text_response)
+                            )
+
+                            logger.info(
+                                f"Groq success with {model}. Latency: {latency:.2f}s"
+                            )
+                            return (
+                                text_response,
+                                f"Groq ({model})",
+                                prompt_tokens,
+                                completion_tokens,
+                                latency,
+                            )
+
+                    logger.warning(
+                        f"Groq ({model}) returned status {response.status_code}: {response.text[:200]}"
+                    )
+                except Exception as e:
+                    logger.error(f"Error calling Groq ({model}): {e}")
+
+    # --- 3. Fallback to OpenRouter ---
     if config.OPENROUTER_API_KEY:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with _shared_http() as client:
             for model in openrouter_models:
                 try:
                     logger.info(f"Trying OpenRouter fallback ({model})...")

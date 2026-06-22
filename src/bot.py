@@ -2,6 +2,7 @@ import asyncio
 import logging
 
 import httpx
+from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
@@ -119,6 +120,36 @@ async def post_init(application) -> None:
         )
 
 
+async def error_handler(update: object, context) -> None:
+    """
+    Catch-all for exceptions raised inside any handler. Without this, a failure
+    on the text path (e.g. a transient DB/Turso hiccup on a write) would reach
+    the user as silence. Here we log it and best-effort tell the user something
+    went wrong, so a request never ends with no reply at all.
+    """
+    logger.error(
+        "Unhandled exception while processing an update", exc_info=context.error
+    )
+    try:
+        if not isinstance(update, Update) or update.effective_chat is None:
+            return
+        lang = "ru"
+        if update.effective_user:
+            try:
+                from src.database import get_user_language
+
+                lang = await get_user_language(update.effective_user.id)
+            except Exception:
+                pass
+        from src.i18n import t
+
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id, text=t("error_no_answer", lang)
+        )
+    except Exception as e:
+        logger.error(f"error_handler failed to notify user: {e}")
+
+
 def main():
     # Make sure we have a valid token (already validated in config.py, but safe guard check)
     if not config.TELEGRAM_BOT_TOKEN:
@@ -159,6 +190,10 @@ def main():
     app.add_handler(MessageHandler(filters.VOICE, voice_handler))
     app.add_handler(InlineQueryHandler(inline_query_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+
+    # Global safety net: any unhandled exception in a handler routes here instead
+    # of failing silently, so the user always gets some response.
+    app.add_error_handler(error_handler)
 
     if config.WEBHOOK_URL:
         # Webhook mode: Telegram pushes updates to us over HTTPS. Used on

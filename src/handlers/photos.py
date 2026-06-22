@@ -6,9 +6,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from src.database import (
-    get_user_language,
-    get_user_mode,
-    get_user_settings,
+    get_user_context,
     log_message,
     log_nutrition_entry,
     log_usage_stats,
@@ -52,8 +50,10 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         last_name=user.last_name,
     )
 
-    mode = await get_user_mode(user_id)
-    lang = await get_user_language(user_id)
+    # Single combined fetch (mode + settings + language) instead of three reads.
+    ctx = await get_user_context(user_id)
+    mode = ctx["mode"]
+    lang = ctx["language"]
 
     # Show typing status to user
     await context.bot.send_chat_action(
@@ -128,8 +128,12 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         user_log_content = f"[{mode.upper()} PHOTO] {caption}".strip()
         await log_message(user_id=user_id, role="user", content=user_log_content)
 
-        # 3. Retrieve settings
-        settings = await get_user_settings(user_id)
+        # 3. Settings come from the same combined context fetch above.
+        settings = {
+            "max_length": ctx["max_length"],
+            "creativity": ctx["creativity"],
+            "language": ctx["language"],
+        }
 
         # 4. Call LLM with base64 image and settings
         response_text, model_name, prompt_tokens, completion_tokens, latency = (
