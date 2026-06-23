@@ -56,10 +56,18 @@ async def get_admin_dashboard_data() -> tuple[str, InlineKeyboardMarkup]:
     """
     overview = await get_admin_overview()
 
-    # Database file size
-    db_size_kb = 0.0
-    if os.path.exists(DB_PATH):
-        db_size_kb = os.path.getsize(DB_PATH) / 1024.0
+    # Database line. On Turso the DB is remote (no local file), so os.path.getsize
+    # would always report 0 KB — show the backend instead of a misleading zero.
+    if config.USE_TURSO:
+        db_line = "• Бэкенд: <code>Turso (удалённая БД)</code>"
+    else:
+        db_size_kb = 0.0
+        if os.path.exists(DB_PATH):
+            db_size_kb = os.path.getsize(DB_PATH) / 1024.0
+        db_line = (
+            f"• Размер: <code>{db_size_kb:.2f} KB</code> · "
+            f"файл: <code>{os.path.basename(DB_PATH)}</code>"
+        )
 
     # Key pool status
     total_keys = len(config.GOOGLE_API_KEYS)
@@ -82,8 +90,7 @@ async def get_admin_dashboard_data() -> tuple[str, InlineKeyboardMarkup]:
         "🍽 <b>Питание</b>\n"
         f"• Проанализировано блюд: <code>{overview['total_meals']}</code>\n\n"
         "🗄 <b>База данных</b>\n"
-        f"• Размер: <code>{db_size_kb:.2f} KB</code> · "
-        f"файл: <code>{os.path.basename(DB_PATH)}</code>\n\n"
+        f"{db_line}\n\n"
         "🔑 <b>API ключи (Gemini Pool)</b>\n"
         f"• Всего: <code>{total_keys}</code> · активно: <code>{active_keys}</code> · "
         f"cooldown: <code>{cooldown_keys}</code>"
@@ -116,12 +123,6 @@ async def get_admin_dashboard_data() -> tuple[str, InlineKeyboardMarkup]:
                 "📁 Экспорт stats в CSV", callback_data="admin_export_csv"
             ),
         ],
-        [
-            InlineKeyboardButton(
-                "🧹 Очистить историю чатов (>90 дн)",
-                callback_data="admin_logs_cleanup",
-            ),
-        ],
     ]
     return text, InlineKeyboardMarkup(keyboard)
 
@@ -142,34 +143,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await query.answer()
     data = query.data
 
-    if data == "admin_logs_cleanup":
-        # Trims only old chat *context* (messages). Statistics, users, the
-        # nutrition log and feedback are deliberately never deleted, so lifetime
-        # metrics stay accurate forever.
-        try:
-            async with get_db_connection() as db:
-                cursor = await db.execute(
-                    "DELETE FROM messages WHERE timestamp < datetime('now', '-90 days');"
-                )
-                deleted_messages = cursor.rowcount
-                await db.commit()
-
-            text, reply_markup = await get_admin_dashboard_data()
-            cleanup_msg = (
-                f"\n\n✅ <b>История чатов очищена</b> (старше 90 дней).\n"
-                f"Удалено сообщений: <code>{deleted_messages}</code>\n"
-                f"<i>Статистика и пользователи сохранены полностью.</i>"
-            )
-            await query.edit_message_text(
-                text=text + cleanup_msg,
-                reply_markup=reply_markup,
-                parse_mode="HTML",
-            )
-        except Exception as e:
-            logger.error(f"Error during chat history cleanup: {e}")
-            await query.message.reply_text(f"❌ Ошибка при очистке истории: {e}")
-
-    elif data == "admin_keys_status":
+    if data == "admin_keys_status":
         now = time.time()
         cooldown_statuses = []
 
