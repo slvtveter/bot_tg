@@ -28,6 +28,7 @@ from src.handlers import (
     mode_callback,
     mode_command,
     photo_handler,
+    privacy_command,
     settings_callback,
     settings_command,
     start_command,
@@ -81,6 +82,7 @@ async def post_init(application) -> None:
         BotCommand("stats", "Показать статистику использования"),
         BotCommand("clear", "Очистить историю и начать заново"),
         BotCommand("feedback", "Отправить отзыв или идею"),
+        BotCommand("privacy", "Конфиденциальность данных"),
         BotCommand("admin", "Панель администратора (для админов)"),
         BotCommand("help", "Справка и FAQ"),
     ]
@@ -92,6 +94,7 @@ async def post_init(application) -> None:
         BotCommand("stats", "Show your usage stats"),
         BotCommand("clear", "Clear history and start fresh"),
         BotCommand("feedback", "Send feedback or an idea"),
+        BotCommand("privacy", "Data privacy"),
         BotCommand("admin", "Admin panel (admins only)"),
         BotCommand("help", "Help and FAQ"),
     ]
@@ -172,6 +175,7 @@ def main():
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("settings", settings_command))
     app.add_handler(CommandHandler("feedback", feedback_command))
+    app.add_handler(CommandHandler("privacy", privacy_command))
     app.add_handler(CommandHandler("admin", admin_command))
     app.add_handler(CommandHandler("broadcast", broadcast_command))
     app.add_handler(CommandHandler("disable_model", disable_model_command))

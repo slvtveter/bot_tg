@@ -294,7 +294,8 @@ STRINGS: Dict[str, Dict[str, str]] = {
             "/settings — длина ответов, креативность, язык\n"
             "/stats — ваша статистика\n"
             "/clear — очистить историю и начать заново\n"
-            "/feedback — отправить отзыв или идею\n\n"
+            "/feedback — отправить отзыв или идею\n"
+            "/privacy — как мы храним данные (анонимно)\n\n"
             "<b>Группы</b>: добавьте бота в чат и обращайтесь через @упоминание или "
             "ответом на его сообщение."
         ),
@@ -309,9 +310,50 @@ STRINGS: Dict[str, Dict[str, str]] = {
             "/settings — response length, creativity, language\n"
             "/stats — your stats\n"
             "/clear — clear history and start fresh\n"
-            "/feedback — send feedback or an idea\n\n"
+            "/feedback — send feedback or an idea\n"
+            "/privacy — how we store your data (anonymously)\n\n"
             "<b>Groups</b>: add the bot to a chat and address it with an @mention or "
             "by replying to its message."
+        ),
+    },
+    "privacy": {
+        "ru": (
+            "🔒 <b>Приватность</b>\n\n"
+            "Коротко: Nela AI не читает ваши переписки и не знает, кто именно "
+            "что спросил.\n\n"
+            "<b>Что мы храним</b>\n"
+            "• Ваши сообщения и ответы бота — но без привязки к вашему имени или "
+            "аккаунту. Они лежат под анонимным идентификатором, так что просто "
+            "открыть базу и увидеть «вот это спросил такой-то человек» нельзя.\n"
+            "• Базовый профиль: имя в Telegram, язык и выбранный режим — чтобы "
+            "бот работал и отвечал так, как вам удобно.\n"
+            "• Немного статистики: сколько всего сообщений вы отправили. Это "
+            "нужно, чтобы понимать нагрузку, а не следить за вами.\n\n"
+            "<b>Чего мы не делаем</b>\n"
+            "• Не продаём и не передаём ваши данные кому-либо.\n"
+            "• Не читаем переписки вручную и не связываем их с вашей личностью.\n\n"
+            "<b>Вы управляете данными</b>\n"
+            "• /clear — удалить всю историю переписки в любой момент.\n\n"
+            "Если есть вопросы — просто напишите нам через /feedback."
+        ),
+        "en": (
+            "🔒 <b>Privacy</b>\n\n"
+            "Short version: Nela AI doesn't read your chats and doesn't know "
+            "who asked what.\n\n"
+            "<b>What we store</b>\n"
+            "• Your messages and the bot's replies — but not linked to your name "
+            "or account. They're kept under an anonymous identifier, so no one "
+            "can just open the database and see “this person asked this.”\n"
+            "• A basic profile: your Telegram name, language and selected mode — "
+            "so the bot works and replies the way you like.\n"
+            "• A little usage data: how many messages you've sent in total. This "
+            "is to understand load, not to track you.\n\n"
+            "<b>What we don't do</b>\n"
+            "• We don't sell or share your data with anyone.\n"
+            "• We don't read chats manually or tie them to your identity.\n\n"
+            "<b>You're in control</b>\n"
+            "• /clear — wipe your entire chat history anytime.\n\n"
+            "Questions? Just reach out via /feedback."
         ),
     },
 }

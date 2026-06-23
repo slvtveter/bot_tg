@@ -454,9 +454,9 @@ class TestDatabaseAdditional(unittest.IsolatedAsyncioTestCase):
                 columns = {col[1] for col in await cursor.fetchall()}
         self.assertTrue({"max_length", "creativity", "language"}.issubset(columns))
 
-    async def test_migration_messages_missing_foreign_keys(self):
+    async def test_migration_messages_to_pseudonymous(self):
         import aiosqlite
-        # Create users and messages tables without foreign keys
+        # Create a legacy users + messages schema that stores the raw user_id.
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("CREATE TABLE users (user_id INTEGER PRIMARY KEY);")
             await db.execute("INSERT INTO users (user_id) VALUES (1);")
@@ -470,16 +470,36 @@ class TestDatabaseAdditional(unittest.IsolatedAsyncioTestCase):
                 );
             """)
             await db.execute("INSERT INTO messages (user_id, role, content) VALUES (1, 'user', 'hello');")
+            await db.execute("INSERT INTO messages (user_id, role, content) VALUES (1, 'assistant', 'hi');")
             await db.commit()
 
-        # Run init_db to trigger migration
+        # Run init_db to trigger the pseudonymization migration.
         await database.init_db(self.db_path)
 
-        # Verify foreign keys are present now
         async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("PRAGMA foreign_key_list(messages);") as cursor:
-                fks = await cursor.fetchall()
-        self.assertTrue(len(fks) > 0)
+            async with db.execute("PRAGMA table_info(messages);") as cursor:
+                msg_cols = {col[1] for col in await cursor.fetchall()}
+            async with db.execute("PRAGMA table_info(users);") as cursor:
+                user_cols = {col[1] for col in await cursor.fetchall()}
+            async with db.execute("SELECT conv_id FROM messages WHERE content = 'hello'") as cursor:
+                conv_row = await cursor.fetchone()
+            async with db.execute("SELECT message_count FROM users WHERE user_id = 1") as cursor:
+                count_row = await cursor.fetchone()
+
+        # The raw user_id column is gone; conv_id replaces it. No FK back to users.
+        self.assertIn("conv_id", msg_cols)
+        self.assertNotIn("user_id", msg_cols)
+        self.assertIn("message_count", user_cols)
+
+        # Existing rows were anonymized to the deterministic hash of user_id 1.
+        self.assertEqual(conv_row[0], database._conv_id(1))
+
+        # message_count backfilled from past 'user' messages only (1, not 2).
+        self.assertEqual(count_row[0], 1)
+
+        # And the history is still retrievable for that user via the public API.
+        history = await database.get_chat_history(1, db_path=self.db_path)
+        self.assertEqual([m["content"] for m in history], ["hello", "hi"])
 
     async def test_migration_stats_missing_foreign_keys(self):
         import aiosqlite

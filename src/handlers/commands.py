@@ -235,3 +235,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     lang = await get_user_language(user.id) if user else "ru"
     await update.message.reply_html(t("help", lang, modes=mode_overview(lang)))
+
+
+async def privacy_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Explains, in plain language, what data is stored and how (anonymously)."""
+    user = update.effective_user
+    if not update.message:
+        return
+
+    lang = await get_user_language(user.id) if user else "ru"
+    await update.message.reply_html(t("privacy", lang))

@@ -70,3 +70,13 @@ KEEPALIVE_MINUTES = int(os.getenv("KEEPALIVE_MINUTES", "10"))
 TURSO_DATABASE_URL = os.getenv("TURSO_DATABASE_URL", "").strip()
 TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "").strip()
 USE_TURSO = bool(TURSO_DATABASE_URL)
+
+# Privacy: chat content is stored in the messages table under a PSEUDONYMOUS
+# identifier (a salted hash of the Telegram user id) instead of the raw user id,
+# so messages can't be casually attributed to a real person by reading the DB.
+# This salt MUST stay stable for the life of the deployment: if it changes,
+# every conversation's history becomes unreachable (the bot would look it up
+# under a different hash) and per-user message lookups break. Override it in
+# production for real secrecy; the built-in default keeps the bot working
+# out of the box. See _conv_id() in src/database.py.
+PRIVACY_SALT = os.getenv("PRIVACY_SALT", "nela-ai-default-privacy-salt-v1")

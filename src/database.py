@@ -1,4 +1,5 @@
 import os
+import hashlib
 import aiosqlite
 import logging
 from typing import Optional, Dict, Any, List
@@ -11,6 +12,108 @@ DB_PATH = os.getenv("DB_PATH", "/Users/slvtveter/Desktop/PycharmProjects/bot_tg/
 
 # Set up logger
 logger = logging.getLogger(__name__)
+
+
+def _conv_id(user_id: int) -> str:
+    """
+    Pseudonymous, stable identifier for a user's chat history. We store THIS in
+    the messages table instead of the raw Telegram user_id, so message content
+    can't be casually attributed to a person by reading the database (there's no
+    name or numeric id sitting next to the text). It's a salted SHA-256 hash:
+    deterministic for a given user (so conversation context, /clear and undo keep
+    working) but not reversible by inspection. The salt lives in
+    config.PRIVACY_SALT and must stay stable — see the note there.
+
+    Note this is pseudonymity, not absolute anonymity: someone holding both the
+    salt and a specific user_id could recompute the hash. It defeats casual/
+    accidental re-identification, which is the threat model here.
+    """
+    digest = hashlib.sha256(f"{config.PRIVACY_SALT}:{user_id}".encode("utf-8"))
+    return digest.hexdigest()
+
+
+# Pseudonymous messages schema: no user_id and no FK to users, so chat content
+# is decoupled from identity. The conv_id column holds _conv_id(user_id).
+_MESSAGES_DDL = """CREATE TABLE IF NOT EXISTS messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conv_id TEXT,
+    role TEXT,
+    content TEXT,
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)"""
+
+
+async def _migrate_messages_pseudonymous(db) -> None:
+    """
+    Brings the messages table to the pseudonymous schema and ensures the
+    users.message_count column exists. Safe to run on every startup and on both
+    backends (only touches portable SQL: PRAGMA table_info, ALTER/RENAME/DROP,
+    plain INSERT). A no-op once already migrated.
+
+    On a legacy DB whose messages table still has a user_id column, the existing
+    rows are anonymized in place: each user_id is replaced by its _conv_id hash,
+    and users.message_count is backfilled from each user's past 'user' messages
+    before the old column is dropped.
+    """
+    # 1. Ensure users.message_count exists (lifetime count of messages a user
+    #    has sent). Added nullable with a default; backfilled below on migration.
+    async with db.execute("PRAGMA table_info(users);") as cursor:
+        user_cols = {row[1] for row in await cursor.fetchall()}
+    if "message_count" not in user_cols:
+        logger.info("Migrating users table: adding message_count column")
+        await db.execute(
+            "ALTER TABLE users ADD COLUMN message_count INTEGER DEFAULT 0;"
+        )
+
+    # 2. Bring messages to the conv_id schema.
+    async with db.execute("PRAGMA table_info(messages);") as cursor:
+        msg_cols = {row[1] for row in await cursor.fetchall()}
+
+    if not msg_cols:
+        # Fresh database: just create the table.
+        await db.execute(_MESSAGES_DDL)
+    elif "conv_id" not in msg_cols:
+        # Legacy schema with a raw user_id: anonymize existing rows in place.
+        logger.info(
+            "Migrating messages table to pseudonymous conv_id "
+            "(anonymizing existing chat history)..."
+        )
+        await db.execute("DROP TABLE IF EXISTS messages_old;")
+        await db.execute("ALTER TABLE messages RENAME TO messages_old;")
+        await db.execute(_MESSAGES_DDL)
+
+        # Backfill message_count from the old rows before user_id is gone.
+        async with db.execute(
+            "SELECT user_id, COUNT(*) FROM messages_old "
+            "WHERE role = 'user' GROUP BY user_id"
+        ) as cursor:
+            counts = await cursor.fetchall()
+        for row in counts:
+            uid, cnt = row[0], row[1]
+            if uid is not None:
+                await db.execute(
+                    "UPDATE users SET message_count = ? WHERE user_id = ?",
+                    (cnt, uid),
+                )
+
+        # Copy every message across, hashing user_id -> conv_id.
+        async with db.execute(
+            "SELECT id, user_id, role, content, timestamp FROM messages_old"
+        ) as cursor:
+            old_rows = await cursor.fetchall()
+        for row in old_rows:
+            rid, uid, role, content, ts = row[0], row[1], row[2], row[3], row[4]
+            cid = _conv_id(uid) if uid is not None else None
+            await db.execute(
+                "INSERT INTO messages (id, conv_id, role, content, timestamp) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (rid, cid, role, content, ts),
+            )
+        await db.execute("DROP TABLE messages_old;")
+
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_conv_id ON messages(conv_id);"
+    )
 
 
 # --- Turso (libSQL) adapter -------------------------------------------------
@@ -164,17 +267,11 @@ async def _init_schema_turso() -> None:
             max_length TEXT DEFAULT 'medium',
             creativity TEXT DEFAULT 'balanced',
             language TEXT DEFAULT 'ru',
+            message_count INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )""",
-        """CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            role TEXT,
-            content TEXT,
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-        )""",
+        _MESSAGES_DDL,
         """CREATE TABLE IF NOT EXISTS stats (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
@@ -203,7 +300,6 @@ async def _init_schema_turso() -> None:
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
         )""",
-        "CREATE INDEX IF NOT EXISTS idx_messages_user_id ON messages(user_id)",
         "CREATE INDEX IF NOT EXISTS idx_stats_user_id ON stats(user_id)",
         "CREATE INDEX IF NOT EXISTS idx_stats_timestamp ON stats(timestamp)",
         "CREATE INDEX IF NOT EXISTS idx_nutrition_log_user_id ON nutrition_log(user_id)",
@@ -211,6 +307,9 @@ async def _init_schema_turso() -> None:
     async with get_db_connection() as db:
         for statement in statements:
             await db.execute(statement)
+        # Migrate any pre-existing remote DB (created before pseudonymization)
+        # to the conv_id schema + message_count column, then create its index.
+        await _migrate_messages_pseudonymous(db)
         await db.commit()
 
 
@@ -244,6 +343,7 @@ async def init_db(db_path: str = DB_PATH) -> None:
                     max_length TEXT DEFAULT 'medium',
                     creativity TEXT DEFAULT 'balanced',
                     language TEXT DEFAULT 'ru',
+                    message_count INTEGER DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -285,50 +385,9 @@ async def init_db(db_path: str = DB_PATH) -> None:
                     "UPDATE users SET last_seen = created_at WHERE last_seen IS NULL;"
                 )
 
-            # 2. Check and migrate messages table to include foreign key constraint
-            async with db.execute("PRAGMA foreign_key_list(messages);") as cursor:
-                messages_fks = await cursor.fetchall()
-
-            if not messages_fks:
-                # Check if messages table exists
-                async with db.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name='messages';"
-                ) as cursor:
-                    has_messages = await cursor.fetchone()
-
-                if has_messages:
-                    logger.info(
-                        "Migrating existing messages table to add foreign key..."
-                    )
-                    await db.execute("ALTER TABLE messages RENAME TO messages_old;")
-                    await db.execute("""
-                        CREATE TABLE messages (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            user_id INTEGER,
-                            role TEXT,
-                            content TEXT,
-                            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                            FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-                        );
-                    """)
-                    await db.execute("PRAGMA foreign_keys = OFF;")
-                    await db.execute("""
-                        INSERT INTO messages (id, user_id, role, content, timestamp)
-                        SELECT id, user_id, role, content, timestamp FROM messages_old;
-                    """)
-                    await db.execute("DROP TABLE messages_old;")
-                    await db.execute("PRAGMA foreign_keys = ON;")
-                else:
-                    await db.execute("""
-                        CREATE TABLE IF NOT EXISTS messages (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            user_id INTEGER,
-                            role TEXT,
-                            content TEXT,
-                            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                            FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-                        )
-                    """)
+            # 2. Bring messages to the pseudonymous (conv_id) schema and ensure
+            # the users.message_count column exists. Anonymizes any legacy rows.
+            await _migrate_messages_pseudonymous(db)
 
             # 3. Check and migrate stats table to include foreign key constraint
             async with db.execute("PRAGMA foreign_key_list(stats);") as cursor:
@@ -404,10 +463,8 @@ async def init_db(db_path: str = DB_PATH) -> None:
                 )
             """)
 
-            # 6. Create Indexes if they do not exist
-            await db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_messages_user_id ON messages(user_id);"
-            )
+            # 6. Create Indexes if they do not exist (idx_messages_conv_id is
+            # created inside _migrate_messages_pseudonymous above).
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_stats_user_id ON stats(user_id);"
             )
@@ -631,16 +688,18 @@ async def get_user_activity_summary(user_id: int, db_path: str = DB_PATH) -> Dic
                 meals_analyzed = row[0] if row else 0
 
             async with db.execute(
-                "SELECT created_at, last_seen FROM users WHERE user_id = ?",
+                "SELECT created_at, last_seen, message_count FROM users WHERE user_id = ?",
                 (user_id,),
             ) as cursor:
                 row = await cursor.fetchone()
                 member_since = row[0] if row else None
                 last_seen = row[1] if row else None
+                messages_sent = (row[2] if row and row[2] is not None else 0)
 
             return {
                 "request_count": request_count,
                 "meals_analyzed": meals_analyzed,
+                "messages_sent": messages_sent,
                 "member_since": member_since,
                 "last_seen": last_seen,
             }
@@ -649,6 +708,7 @@ async def get_user_activity_summary(user_id: int, db_path: str = DB_PATH) -> Dic
         return {
             "request_count": 0,
             "meals_analyzed": 0,
+            "messages_sent": 0,
             "member_since": None,
             "last_seen": None,
         }
@@ -659,16 +719,27 @@ async def log_message(
 ) -> None:
     """
     Saves a chat message (user prompt or bot response) to the database history.
+
+    The message is stored under the pseudonymous _conv_id(user_id) rather than
+    the raw user_id, so chat content isn't directly attributable to a person.
+    Each 'user'-role message also bumps the lifetime users.message_count (the
+    bot's reply isn't counted — this is "messages the user wrote").
     """
     try:
         async with get_db_connection(db_path) as db:
             await db.execute(
                 """
-                INSERT INTO messages (user_id, role, content)
+                INSERT INTO messages (conv_id, role, content)
                 VALUES (?, ?, ?)
             """,
-                (user_id, role, content),
+                (_conv_id(user_id), role, content),
             )
+            if role == "user":
+                await db.execute(
+                    "UPDATE users SET message_count = COALESCE(message_count, 0) + 1 "
+                    "WHERE user_id = ?",
+                    (user_id,),
+                )
             await db.commit()
             logger.info(f"Message logged for user {user_id}.")
     except Exception as e:
@@ -806,7 +877,7 @@ async def clear_chat_history(user_id: int, db_path: str = DB_PATH) -> None:
     """
     try:
         async with get_db_connection(db_path) as db:
-            await db.execute("DELETE FROM messages WHERE user_id = ?", (user_id,))
+            await db.execute("DELETE FROM messages WHERE conv_id = ?", (_conv_id(user_id),))
             await db.commit()
             logger.info(f"Chat history cleared for user {user_id}.")
     except Exception as e:
@@ -820,7 +891,7 @@ async def get_chat_history(
     """
     Queries the last N messages for a user (ordered chronologically)
     formatted as a list of dicts with 'role' and 'content'.
-    Uses the idx_messages_user_id index to optimize retrieval.
+    Uses the idx_messages_conv_id index to optimize retrieval.
     """
     try:
         async with get_db_connection(db_path) as db:
@@ -828,12 +899,12 @@ async def get_chat_history(
                 """
                 SELECT role, content FROM (
                     SELECT id, role, content FROM messages
-                    WHERE user_id = ?
+                    WHERE conv_id = ?
                     ORDER BY id DESC
                     LIMIT ?
                 ) ORDER BY id ASC
             """,
-                (user_id, limit),
+                (_conv_id(user_id), limit),
             ) as cursor:
                 rows = await cursor.fetchall()
                 return [{"role": row[0], "content": row[1]} for row in rows]
@@ -854,10 +925,10 @@ async def get_all_chat_history(
             async with db.execute(
                 """
                 SELECT role, content, timestamp FROM messages
-                WHERE user_id = ?
+                WHERE conv_id = ?
                 ORDER BY id ASC
             """,
-                (user_id,),
+                (_conv_id(user_id),),
             ) as cursor:
                 rows = await cursor.fetchall()
                 return [
@@ -946,8 +1017,8 @@ async def delete_last_exchange(user_id: int, db_path: str = DB_PATH) -> bool:
     try:
         async with get_db_connection(db_path) as db:
             async with db.execute(
-                "SELECT id FROM messages WHERE user_id = ? ORDER BY id DESC LIMIT 2",
-                (user_id,),
+                "SELECT id FROM messages WHERE conv_id = ? ORDER BY id DESC LIMIT 2",
+                (_conv_id(user_id),),
             ) as cursor:
                 rows = await cursor.fetchall()
             if not rows:
