@@ -1,10 +1,13 @@
 import os
+import tempfile
 import unittest
 import httpx
 from unittest.mock import patch, MagicMock
 
-# Configure temporary test DB path before importing database
-TEST_DB_DIR = "/Users/slvtveter/Desktop/PycharmProjects/bot_tg/tests_tmp"
+# Configure temporary test DB path before importing database. Uses the system
+# temp dir so it's portable across machines and CI runners (was previously a
+# hardcoded absolute macOS path that only worked on the original dev machine).
+TEST_DB_DIR = os.path.join(tempfile.gettempdir(), "bot_tg_tests_tmp")
 os.makedirs(TEST_DB_DIR, exist_ok=True)
 TEST_DB_PATH = os.path.join(TEST_DB_DIR, "test_bot.db")
 os.environ["DB_PATH"] = TEST_DB_PATH
