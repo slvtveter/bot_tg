@@ -15,6 +15,7 @@ from src.database import (
     get_usage_stats,
     get_user_activity_summary,
     get_user_language,
+    get_today_nutrition_totals,
     get_user_mode,
     get_week_nutrition_totals,
     set_user_mode,
@@ -110,6 +111,31 @@ async def week_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             days=totals["days"],
             cal=f"{totals['calories']:.0f}",
             avg=f"{totals['calories'] / days:.0f}",
+            p=f"{totals['protein']:.0f}",
+            f=f"{totals['fat']:.0f}",
+            c=f"{totals['carbs']:.0f}",
+        )
+    )
+
+
+async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Shows nutrition totals logged today (local server date)."""
+    user = update.effective_user
+    if not user or not update.message:
+        return
+
+    lang = await get_user_language(user.id)
+    totals = await get_today_nutrition_totals(user.id)
+    if totals["entries"] == 0:
+        await update.message.reply_html(t("today_none", lang))
+        return
+
+    await update.message.reply_html(
+        t(
+            "today_body",
+            lang,
+            entries=totals["entries"],
+            cal=f"{totals['calories']:.0f}",
             p=f"{totals['protein']:.0f}",
             f=f"{totals['fat']:.0f}",
             c=f"{totals['carbs']:.0f}",

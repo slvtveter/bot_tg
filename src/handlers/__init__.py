@@ -14,6 +14,7 @@ from .commands import (
     privacy_command,
     start_command,
     stats_command,
+    today_command,
     week_command,
 )
 from .inline import inline_query_handler
@@ -42,5 +43,6 @@ __all__ = [
     "disable_model_command",
     "enable_model_command",
     "week_command",
+    "today_command",
     "feedback_command",
 ]

@@ -290,6 +290,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
             "🍏 <b>Питание</b> (кнопка снизу) — пришли фото блюда или опиши его: дам "
             "КБЖУ и буду вести дневник.\n\n"
             "<b>Команды</b>\n"
+            "/today — итоги питания за сегодня\n"
             "/week — итоги питания за 7 дней\n"
             "/settings — длина ответов, креативность, язык\n"
             "/stats — ваша статистика\n"
@@ -306,6 +307,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
             "🍏 <b>Nutrition</b> (button below) — send a photo of your meal or "
             "describe it: I'll give calories/macros and keep a diary.\n\n"
             "<b>Commands</b>\n"
+            "/today — today's nutrition totals\n"
             "/week — nutrition over the last 7 days\n"
             "/settings — response length, creativity, language\n"
             "/stats — your stats\n"
@@ -319,41 +321,39 @@ STRINGS: Dict[str, Dict[str, str]] = {
     "privacy": {
         "ru": (
             "🔒 <b>Приватность</b>\n\n"
-            "Коротко: Nela AI не читает ваши переписки и не знает, кто именно "
-            "что спросил.\n\n"
-            "<b>Что мы храним</b>\n"
-            "• Ваши сообщения и ответы бота — но без привязки к вашему имени или "
-            "аккаунту. Они лежат под анонимным идентификатором, так что просто "
-            "открыть базу и увидеть «вот это спросил такой-то человек» нельзя.\n"
-            "• Базовый профиль: имя в Telegram, язык и выбранный режим — чтобы "
-            "бот работал и отвечал так, как вам удобно.\n"
-            "• Немного статистики: сколько всего сообщений вы отправили. Это "
-            "нужно, чтобы понимать нагрузку, а не следить за вами.\n\n"
-            "<b>Чего мы не делаем</b>\n"
-            "• Не продаём и не передаём ваши данные кому-либо.\n"
-            "• Не читаем переписки вручную и не связываем их с вашей личностью.\n\n"
-            "<b>Вы управляете данными</b>\n"
-            "• /clear — удалить всю историю переписки в любой момент.\n\n"
-            "Если есть вопросы — просто напишите нам через /feedback."
+            "Nela AI не читает ваши переписки и не знает, кто что спросил. "
+            "Сообщения хранятся без привязки к имени или аккаунту — под "
+            "анонимным идентификатором.\n\n"
+            "Профиль (имя в Telegram, язык, режим) нужен только для работы бота. "
+            "Мы не продаём данные и не связываем переписки с вашей личностью.\n\n"
+            "/clear — удалить всю историю в любой момент."
         ),
         "en": (
             "🔒 <b>Privacy</b>\n\n"
-            "Short version: Nela AI doesn't read your chats and doesn't know "
-            "who asked what.\n\n"
-            "<b>What we store</b>\n"
-            "• Your messages and the bot's replies — but not linked to your name "
-            "or account. They're kept under an anonymous identifier, so no one "
-            "can just open the database and see “this person asked this.”\n"
-            "• A basic profile: your Telegram name, language and selected mode — "
-            "so the bot works and replies the way you like.\n"
-            "• A little usage data: how many messages you've sent in total. This "
-            "is to understand load, not to track you.\n\n"
-            "<b>What we don't do</b>\n"
-            "• We don't sell or share your data with anyone.\n"
-            "• We don't read chats manually or tie them to your identity.\n\n"
-            "<b>You're in control</b>\n"
-            "• /clear — wipe your entire chat history anytime.\n\n"
-            "Questions? Just reach out via /feedback."
+            "Nela AI doesn't read your chats and doesn't know who asked what. "
+            "Messages are stored with no link to your name or account — under an "
+            "anonymous identifier.\n\n"
+            "Your profile (Telegram name, language, mode) is only used to run the "
+            "bot. We don't sell your data or tie chats to your identity.\n\n"
+            "/clear — wipe your entire history anytime."
+        ),
+    },
+    "today_none": {
+        "ru": "Сегодня вы ещё не отправляли блюда на анализ в режиме 🍏 Питание.",
+        "en": "You haven't sent any meals for analysis in 🍏 Nutrition mode today.",
+    },
+    "today_body": {
+        "ru": (
+            "🍽 <b>Итоги питания за сегодня</b>\n\n"
+            "• Приёмов пищи: <code>{entries}</code>\n"
+            "• Калорий всего: <code>{cal}</code> ккал\n"
+            "• Белки: <code>{p}</code> г · Жиры: <code>{f}</code> г · Углеводы: <code>{c}</code> г\n"
+        ),
+        "en": (
+            "🍽 <b>Today's nutrition</b>\n\n"
+            "• Meals: <code>{entries}</code>\n"
+            "• Total calories: <code>{cal}</code> kcal\n"
+            "• Protein: <code>{p}</code> g · Fat: <code>{f}</code> g · Carbs: <code>{c}</code> g\n"
         ),
     },
 }

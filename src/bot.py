@@ -33,6 +33,7 @@ from src.handlers import (
     settings_command,
     start_command,
     stats_command,
+    today_command,
     voice_handler,
     week_command,
 )
@@ -77,6 +78,7 @@ async def post_init(application) -> None:
     commands_ru = [
         BotCommand("start", "Перезапустить бота / Начать"),
         BotCommand("mode", "Выбрать режим работы"),
+        BotCommand("today", "Итоги питания за сегодня"),
         BotCommand("week", "Итоги питания за 7 дней"),
         BotCommand("settings", "Настройки ИИ"),
         BotCommand("stats", "Показать статистику использования"),
@@ -89,6 +91,7 @@ async def post_init(application) -> None:
     commands_en = [
         BotCommand("start", "Restart / Get started"),
         BotCommand("mode", "Choose a mode"),
+        BotCommand("today", "Today's nutrition totals"),
         BotCommand("week", "Nutrition over the last 7 days"),
         BotCommand("settings", "AI settings"),
         BotCommand("stats", "Show your usage stats"),
@@ -171,6 +174,7 @@ def main():
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(CommandHandler("week", week_command))
+    app.add_handler(CommandHandler("today", today_command))
     app.add_handler(CommandHandler("mode", mode_command))
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("settings", settings_command))
