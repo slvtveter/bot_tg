@@ -23,6 +23,7 @@ from src.database import (
 )
 from src.i18n import (
     DEFAULT_MODE,
+    MODE_KEYS,
     VISIBLE_MODES,
     mode_label,
     mode_overview,

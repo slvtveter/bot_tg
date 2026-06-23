@@ -40,6 +40,6 @@ Request flow for a text message: `handlers/messages.py` → `Orchestrator.route_
 - **`src/handlers/`** — thin Telegram-event glue; `message_handler` (in `messages.py`) is the main text-message path. Bottom-keyboard button text is resolved via `src/i18n.resolve_button`, which maps either-language button labels back to a `("mode", key)` or `("settings"|"stats"|"clear", None)` action, so button matching survives a user switching UI language mid-session.
 - System prompts and user-facing strings are Russian-first; per-user `language` setting (`ru`/`en`) is appended as an instruction suffix to the system prompt rather than swapping prompt language wholesale.
 
-## Known issues
+## CI / deployment workflow
 
-- `tests/test_suite.py` hardcodes an absolute, machine-specific path (`/Users/slvtveter/Desktop/PycharmProjects/bot_tg/tests_tmp`) for its temporary test DB directory, unlike `tests/run_checks.py`/`tests/run_benchmark.py`, which derive the project root from `__file__`. It works on the original dev machine but will fail (or silently write elsewhere) on any other checkout.
+- **`.github/workflows/ci.yml`** runs `flake8 src/` + the full `unittest` suite on every push to `main` and every PR targeting `main` (Python 3.12, dummy `TELEGRAM_BOT_TOKEN`/`GROQ_API_KEY` env so `config.py` import-validation passes; tests mock LLM I/O so no real keys are needed). Lint is scoped to `src/` on purpose — the `tests/run_*.py` helper scripts have many pre-existing style violations and aren't worth gating on. The intended flow is **Variant A**: work on a branch → open a PR → CI must be green → merge to `main`; Render then auto-deploys `main`, so only tested code reaches prod. Don't commit straight to `main` (it bypasses the gate).
