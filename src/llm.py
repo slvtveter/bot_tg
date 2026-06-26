@@ -328,6 +328,64 @@ def is_response_complete(text: str) -> bool:
     return True
 
 
+# Fastest direct Gemini text model (leads `direct_models`): used for cheap
+# internal control calls like the web-search router, where we want a quick
+# yes/no + query rewrite, not a high-quality answer.
+_QUICK_MODEL = "gemini-3.1-flash-lite"
+
+
+async def quick_complete(prompt: str, max_tokens: int = 64) -> Optional[str]:
+    """
+    One fast, cheap Gemini text completion for internal control tasks (currently
+    the web-search router). Deliberately NOT the full fallback chain: it tries
+    the fastest model once per active key, with thinking disabled and a tight
+    timeout, and returns None on ANY failure. Callers treat None as "no decision"
+    and proceed without the feature (fail-open), so this never blocks a reply.
+    Goes through the same concurrency semaphore as ask_llm so it still counts
+    against the global outbound budget.
+    """
+    if not config.GOOGLE_API_KEYS:
+        return None
+
+    model = _QUICK_MODEL
+    generation_config: Dict[str, Any] = {
+        "maxOutputTokens": max_tokens,
+        "temperature": 0.0,
+    }
+    if model in THINKING_CONTROL_MODELS:
+        generation_config["thinkingConfig"] = {"thinkingBudget": 0}
+    payload = {
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": generation_config,
+    }
+
+    async with _LLM_SEMAPHORE:
+        keys = key_pool.get_active_keys(model)
+        keys = keys.copy()
+        random.shuffle(keys)
+        for key in keys:
+            try:
+                url = (
+                    "https://generativelanguage.googleapis.com"
+                    f"/v1beta/models/{model}:generateContent?key={key}"
+                )
+                async with _shared_http() as client:
+                    resp = await client.post(url, json=payload, timeout=_FAST_TIMEOUT)
+                if resp.status_code != 200:
+                    continue
+                candidates = resp.json().get("candidates", [])
+                if not candidates:
+                    continue
+                parts = candidates[0].get("content", {}).get("parts", [])
+                text = "".join(p.get("text", "") for p in parts).strip()
+                if text:
+                    return text
+            except Exception as e:
+                logger.warning(f"quick_complete failed on key {key[:8]}: {e}")
+                continue
+    return None
+
+
 async def ask_llm(
     mode: str,
     history: List[Dict[str, str]],
@@ -337,11 +395,16 @@ async def ask_llm(
     is_summarizing: bool = False,
     audio_base64: Optional[str] = None,
     audio_mime_type: str = "audio/ogg",
+    web_context: Optional[str] = None,
 ) -> Tuple[Optional[str], Optional[str], int, int, float]:
     """
     Concurrency-capped entry point. A global semaphore bounds how many LLM
     round-trips run at once, so a burst of users can't drive the shared key pool
     into rate-limit cooldowns simultaneously. Delegates to the implementation.
+
+    ``web_context``, when set, is grounding text from the web-search step that
+    gets appended to the system prompt (RAG) so the model answers from fresh
+    facts instead of its training memory.
     """
     async with _LLM_SEMAPHORE:
         return await _ask_llm_uncapped(
@@ -353,6 +416,7 @@ async def ask_llm(
             is_summarizing=is_summarizing,
             audio_base64=audio_base64,
             audio_mime_type=audio_mime_type,
+            web_context=web_context,
         )
 
 
@@ -365,6 +429,7 @@ async def _ask_llm_uncapped(
     is_summarizing: bool = False,
     audio_base64: Optional[str] = None,
     audio_mime_type: str = "audio/ogg",
+    web_context: Optional[str] = None,
 ) -> Tuple[Optional[str], Optional[str], int, int, float]:
     """
     Queries Gemini API directly with key rotation, falling back to OpenRouter.
@@ -441,6 +506,12 @@ async def _ask_llm_uncapped(
         system_prompt += "\nIMPORTANT: You MUST reply in English language only."
     else:
         system_prompt += "\nВАЖНО: Вы ДОЛЖНЫ отвечать только на русском языке."
+
+    # Inject web-search grounding (RAG). Appending to the system prompt reaches
+    # every provider (Gemini systemInstruction, Groq/OpenRouter system message)
+    # without touching the per-provider request builders below.
+    if web_context:
+        system_prompt += "\n\n" + web_context
 
     # Append length constraint instructions to the system prompt
     if max_length == "short":

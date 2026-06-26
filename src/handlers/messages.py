@@ -15,6 +15,7 @@ from src.database import (
 from src.i18n import mode_title, resolve_button, t
 from src.orchestrator import Orchestrator
 from src.sender import send_response
+from src.web_search import maybe_search, sources_footer
 
 # Initialize the orchestrator globally for now
 orchestrator = Orchestrator()
@@ -77,6 +78,12 @@ async def process_text_message(
     # (the agent appends it once). The history is token-trimmed inside ask_llm.
     history = await get_chat_history(user_id=user_id, limit=20)
 
+    # 3. "Invisible" web search: a router decides if this turn needs fresh web
+    # facts; if so we fetch them and inject as grounding (RAG). Fail-open — None
+    # when no search ran, and the bot just answers from the model.
+    search = await maybe_search(text)
+    web_context = search.context if search else None
+
     # 4. Log the user's message now that prior history has been captured
     await log_message(user_id=user_id, role="user", content=text)
 
@@ -88,10 +95,17 @@ async def process_text_message(
             history=history,
             user_settings=settings,
             user_id=user_id,
+            web_context=web_context,
         )
     )
 
     if response_text:
+        # If we grounded the answer on web results, append a tiny source footer.
+        if search and search.sources:
+            footer = sources_footer(search.sources)
+            if footer:
+                response_text = f"{response_text}\n\n{footer}"
+
         # 5. Save bot's reply
         await log_message(user_id=user_id, role="assistant", content=response_text)
 
