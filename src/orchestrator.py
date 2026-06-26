@@ -25,9 +25,6 @@ class Orchestrator:
         history: List[Dict[str, str]],
         user_settings: Optional[Dict[str, str]] = None,
         user_id: Optional[int] = None,
-        web_context: Optional[str] = None,
     ) -> AgentResult:
         agent = self.agents.get(mode) or self.agents[DEFAULT_MODE]
-        return await agent.process(
-            user_input, history, user_settings, user_id, web_context
-        )
+        return await agent.process(user_input, history, user_settings, user_id)

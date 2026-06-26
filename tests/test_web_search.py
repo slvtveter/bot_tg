@@ -9,42 +9,39 @@ from src import config
 from src import database
 from src import llm
 from src import web_search
+from src.agents.generic_agent import GenericAgent
 
 
-class TestRouterParsing(unittest.IsolatedAsyncioTestCase):
-    """_route turns the fast classifier output into a query (or None)."""
+def _gemini_text_response(text):
+    r = MagicMock(spec=httpx.Response)
+    r.status_code = 200
+    r.json.return_value = {
+        "candidates": [
+            {"content": {"role": "model", "parts": [{"text": text}]}, "finishReason": "STOP"}
+        ],
+        "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 5},
+    }
+    return r
 
-    @patch("src.web_search.quick_complete", new_callable=AsyncMock)
-    async def test_no_means_no_search(self, mock_quick):
-        mock_quick.return_value = "NO"
-        self.assertIsNone(await web_search._route("привет, как дела"))
 
-    @patch("src.web_search.quick_complete", new_callable=AsyncMock)
-    async def test_search_line_is_parsed(self, mock_quick):
-        mock_quick.return_value = 'SEARCH: погода в Москве сегодня'
-        self.assertEqual(
-            await web_search._route("какая погода"), "погода в Москве сегодня"
-        )
-
-    @patch("src.web_search.quick_complete", new_callable=AsyncMock)
-    async def test_quotes_and_extra_lines_stripped(self, mock_quick):
-        mock_quick.return_value = 'SEARCH: "bitcoin price"\nsome noise'
-        self.assertEqual(await web_search._route("цена битка"), "bitcoin price")
-
-    @patch("src.web_search.quick_complete", new_callable=AsyncMock)
-    async def test_router_failure_is_no_search(self, mock_quick):
-        mock_quick.return_value = None
-        self.assertIsNone(await web_search._route("что-то"))
-
-    @patch("src.web_search.quick_complete", new_callable=AsyncMock)
-    async def test_malformed_output_is_no_search(self, mock_quick):
-        mock_quick.return_value = "maybe you should look it up"
-        self.assertIsNone(await web_search._route("что-то"))
+def _gemini_toolcall_response(query):
+    r = MagicMock(spec=httpx.Response)
+    r.status_code = 200
+    r.json.return_value = {
+        "candidates": [
+            {
+                "content": {
+                    "role": "model",
+                    "parts": [{"functionCall": {"name": "web_search", "args": {"query": query}}}],
+                }
+            }
+        ],
+        "usageMetadata": {"promptTokenCount": 12, "candidatesTokenCount": 3},
+    }
+    return r
 
 
 class TestTavilyClient(unittest.IsolatedAsyncioTestCase):
-    """_tavily parses results on 200 and fails open ([]) on anything else."""
-
     def setUp(self):
         self._orig_key = config.TAVILY_API_KEY
         config.TAVILY_API_KEY = "test-key"
@@ -54,48 +51,42 @@ class TestTavilyClient(unittest.IsolatedAsyncioTestCase):
 
     @patch("httpx.AsyncClient.post")
     async def test_parses_results(self, mock_post):
-        mock_response = MagicMock(spec=httpx.Response)
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
+        r = MagicMock(spec=httpx.Response)
+        r.status_code = 200
+        r.json.return_value = {
             "results": [
                 {"title": "T1", "url": "https://a.com/x", "content": "snippet 1"},
-                {"title": "T2", "url": "https://b.com/y", "content": "snippet 2"},
-                {"title": "T3", "url": "https://c.com/z", "content": ""},  # dropped
+                {"title": "T2", "url": "https://b.com/y", "content": ""},  # dropped
             ]
         }
-        mock_post.return_value = mock_response
-
-        results = await web_search._tavily("query")
-        self.assertEqual(len(results), 2)  # empty-content one dropped
+        mock_post.return_value = r
+        results = await web_search._tavily("q")
+        self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["url"], "https://a.com/x")
-        self.assertEqual(results[0]["content"], "snippet 1")
 
     @patch("httpx.AsyncClient.post")
     async def test_non_200_returns_empty(self, mock_post):
-        mock_response = MagicMock(spec=httpx.Response)
-        mock_response.status_code = 429
-        mock_response.text = "rate limited"
-        mock_post.return_value = mock_response
-        self.assertEqual(await web_search._tavily("query"), [])
+        r = MagicMock(spec=httpx.Response)
+        r.status_code = 429
+        r.text = "rate limited"
+        mock_post.return_value = r
+        self.assertEqual(await web_search._tavily("q"), [])
 
     @patch("httpx.AsyncClient.post", side_effect=httpx.TimeoutException("slow"))
     async def test_exception_returns_empty(self, mock_post):
-        self.assertEqual(await web_search._tavily("query"), [])
+        self.assertEqual(await web_search._tavily("q"), [])
 
 
 class TestSourcesFooter(unittest.TestCase):
-    def test_single_source(self):
-        footer = web_search.sources_footer(["https://www.example.com/page"])
-        self.assertEqual(footer, "(источник: [example.com](https://www.example.com/page))")
+    def test_single(self):
+        self.assertEqual(
+            web_search.sources_footer(["https://www.example.com/p"]),
+            "(источник: [example.com](https://www.example.com/p))",
+        )
 
-    def test_two_sources_dedup_and_cap(self):
+    def test_two_dedup_and_cap(self):
         footer = web_search.sources_footer(
-            [
-                "https://a.com/1",
-                "https://a.com/1",  # dup
-                "https://b.com/2",
-                "https://c.com/3",  # capped out (max 2)
-            ]
+            ["https://a.com/1", "https://a.com/1", "https://b.com/2", "https://c.com/3"]
         )
         self.assertIn("источники:", footer)
         self.assertIn("a.com", footer)
@@ -106,9 +97,7 @@ class TestSourcesFooter(unittest.TestCase):
         self.assertEqual(web_search.sources_footer([]), "")
 
 
-class TestMaybeSearch(unittest.IsolatedAsyncioTestCase):
-    """End-to-end decision logic, each dependency mocked."""
-
+class TestRunSearch(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self._orig_key = config.TAVILY_API_KEY
         self._orig_limit = config.TAVILY_DAILY_LIMIT
@@ -119,63 +108,136 @@ class TestMaybeSearch(unittest.IsolatedAsyncioTestCase):
         config.TAVILY_API_KEY = self._orig_key
         config.TAVILY_DAILY_LIMIT = self._orig_limit
 
-    async def test_no_key_disables_feature(self):
+    async def test_no_key(self):
         config.TAVILY_API_KEY = ""
-        self.assertIsNone(await web_search.maybe_search("какие новости сегодня"))
-
-    async def test_trivial_text_skipped(self):
-        self.assertIsNone(await web_search.maybe_search("ок"))
+        self.assertIsNone(await web_search.run_search("news"))
 
     @patch("src.web_search.get_today_search_count", new_callable=AsyncMock)
-    async def test_over_budget_skipped(self, mock_count):
-        mock_count.return_value = 50  # == limit
-        with patch("src.web_search.quick_complete", new_callable=AsyncMock) as mq:
-            self.assertIsNone(await web_search.maybe_search("какие новости сегодня"))
-            mq.assert_not_called()  # router not even called when over budget
-
-    @patch("src.web_search.get_today_search_count", new_callable=AsyncMock)
-    @patch("src.web_search.quick_complete", new_callable=AsyncMock)
-    async def test_router_no_means_no_search(self, mock_quick, mock_count):
-        mock_count.return_value = 0
-        mock_quick.return_value = "NO"
-        self.assertIsNone(await web_search.maybe_search("перепиши этот текст красиво"))
+    async def test_over_budget(self, mock_count):
+        mock_count.return_value = 50
+        self.assertIsNone(await web_search.run_search("news"))
 
     @patch("src.web_search.increment_search_count", new_callable=AsyncMock)
     @patch("src.web_search.get_today_search_count", new_callable=AsyncMock)
     @patch("src.web_search._tavily", new_callable=AsyncMock)
-    @patch("src.web_search.quick_complete", new_callable=AsyncMock)
-    async def test_empty_results_no_increment(
-        self, mock_quick, mock_tavily, mock_count, mock_incr
-    ):
+    async def test_empty_no_increment(self, mock_tav, mock_count, mock_incr):
         mock_count.return_value = 0
-        mock_quick.return_value = "SEARCH: news"
-        mock_tavily.return_value = []
-        self.assertIsNone(await web_search.maybe_search("какие новости сегодня"))
-        mock_incr.assert_not_called()  # nothing logged if search yielded nothing
+        mock_tav.return_value = []
+        self.assertIsNone(await web_search.run_search("news"))
+        mock_incr.assert_not_called()
 
     @patch("src.web_search.increment_search_count", new_callable=AsyncMock)
     @patch("src.web_search.get_today_search_count", new_callable=AsyncMock)
     @patch("src.web_search._tavily", new_callable=AsyncMock)
-    @patch("src.web_search.quick_complete", new_callable=AsyncMock)
-    async def test_happy_path(
-        self, mock_quick, mock_tavily, mock_count, mock_incr
-    ):
+    async def test_happy(self, mock_tav, mock_count, mock_incr):
         mock_count.return_value = 0
-        mock_quick.return_value = "SEARCH: погода москва"
-        mock_tavily.return_value = [
-            {"title": "Погода", "url": "https://weather.com/m", "content": "+20°C"},
+        mock_tav.return_value = [
+            {"title": "Погода", "url": "https://weather.com/m", "content": "+20"}
         ]
-        result = await web_search.maybe_search("какая сейчас погода в москве")
+        result = await web_search.run_search("погода москва")
         self.assertIsNotNone(result)
-        self.assertIn("ВЕБ-ПОИСК", result.context)
-        self.assertIn("+20°C", result.context)
+        self.assertIn("+20", result.context)
         self.assertEqual(result.sources, ["https://weather.com/m"])
-        mock_incr.assert_awaited_once()  # counter bumped on a real search
+        mock_incr.assert_awaited_once()
+
+
+class TestGeminiParsing(unittest.TestCase):
+    def test_function_call_extracted(self):
+        cand = {"content": {"parts": [{"functionCall": {"name": "web_search", "args": {"query": "q"}}}]}}
+        self.assertEqual(llm._gemini_function_call(cand), "q")
+
+    def test_text_not_a_function_call(self):
+        cand = {"content": {"parts": [{"text": "hello"}]}}
+        self.assertIsNone(llm._gemini_function_call(cand))
+        self.assertEqual(llm._gemini_text(cand), "hello")
+
+
+class TestAnswerWithWebTool(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self._orig_keys = config.GOOGLE_API_KEYS
+        self._orig_tav = config.TAVILY_API_KEY
+        self._orig_limit = config.TAVILY_DAILY_LIMIT
+        config.GOOGLE_API_KEYS = ["dummy_key"]
+        config.TAVILY_DAILY_LIMIT = 50
+        llm.key_pool.cooldowns.clear()
+
+    def tearDown(self):
+        config.GOOGLE_API_KEYS = self._orig_keys
+        config.TAVILY_API_KEY = self._orig_tav
+        config.TAVILY_DAILY_LIMIT = self._orig_limit
+        llm.key_pool.cooldowns.clear()
+
+    async def test_no_keys(self):
+        config.GOOGLE_API_KEYS = []
+        result = await llm.answer_with_web_tool([{"role": "user", "content": "hi"}])
+        text, sources = result[0], result[5]
+        self.assertIsNone(text)
+        self.assertEqual(sources, [])
+
+    @patch("httpx.AsyncClient.post")
+    async def test_direct_answer_no_search(self, mock_post):
+        config.TAVILY_API_KEY = ""  # tool not attached → single call, no search
+        mock_post.return_value = _gemini_text_response("Меня зовут Nela.")
+        text, model, p, c, latency, sources = await llm.answer_with_web_tool(
+            [{"role": "user", "content": "как тебя зовут"}]
+        )
+        self.assertEqual(text, "Меня зовут Nela.")
+        self.assertEqual(sources, [])
+        self.assertEqual(mock_post.call_count, 1)  # only one model call
+
+    @patch("src.web_search.run_search", new_callable=AsyncMock)
+    @patch("src.database.get_today_search_count", new_callable=AsyncMock)
+    @patch("httpx.AsyncClient.post")
+    async def test_tool_call_triggers_search(self, mock_post, mock_count, mock_run):
+        config.TAVILY_API_KEY = "test-key"
+        mock_count.return_value = 0
+        mock_run.return_value = web_search.SearchResult(
+            context="USD/RUB ~ 79", sources=["https://cbr.ru"]
+        )
+        # 1st call: model asks to search; 2nd call: model answers with results.
+        mock_post.side_effect = [
+            _gemini_toolcall_response("курс доллара"),
+            _gemini_text_response("Курс примерно 79 рублей."),
+        ]
+        text, model, p, c, latency, sources = await llm.answer_with_web_tool(
+            [{"role": "user", "content": "какой курс доллара"}]
+        )
+        self.assertEqual(text, "Курс примерно 79 рублей.")
+        self.assertEqual(sources, ["https://cbr.ru"])
+        self.assertEqual(mock_post.call_count, 2)  # decide + answer
+        mock_run.assert_awaited_once_with("курс доллара")
+
+
+class TestGenericAgentGeneral(unittest.IsolatedAsyncioTestCase):
+    @patch("src.agents.generic_agent.answer_with_web_tool", new_callable=AsyncMock)
+    async def test_general_appends_source_footer(self, mock_tool):
+        mock_tool.return_value = ("ответ", "gemini-x", 10, 5, 0.5, ["https://example.com/a"])
+        agent = GenericAgent("general", "general")
+        text, model, p, c, latency = await agent.process("вопрос", [])
+        self.assertIn("ответ", text)
+        self.assertIn("(источник: [example.com](https://example.com/a))", text)
+
+    @patch("src.agents.generic_agent.ask_llm", new_callable=AsyncMock)
+    @patch("src.agents.generic_agent.answer_with_web_tool", new_callable=AsyncMock)
+    async def test_general_falls_back_when_tool_path_fails(self, mock_tool, mock_ask):
+        mock_tool.return_value = (None, None, 0, 0, 0.0, [])
+        mock_ask.return_value = ("резерв", "gemini-y", 1, 1, 0.1)
+        agent = GenericAgent("general", "general")
+        text, *_ = await agent.process("вопрос", [])
+        self.assertEqual(text, "резерв")
+        mock_ask.assert_awaited_once()
+
+    @patch("src.agents.generic_agent.ask_llm", new_callable=AsyncMock)
+    @patch("src.agents.generic_agent.answer_with_web_tool", new_callable=AsyncMock)
+    async def test_non_general_skips_tool_path(self, mock_tool, mock_ask):
+        mock_ask.return_value = ("math answer", "gemini-z", 1, 1, 0.1)
+        agent = GenericAgent("math", "math")
+        text, *_ = await agent.process("2+2", [])
+        self.assertEqual(text, "math answer")
+        mock_tool.assert_not_called()
 
 
 class TestSearchCounterDB(unittest.IsolatedAsyncioTestCase):
-    """The bot-wide daily counter persists and increments per calendar day."""
-
     async def asyncSetUp(self):
         self._tmp = tempfile.mkdtemp()
         self.db_path = os.path.join(self._tmp, "counter_test.db")
@@ -186,37 +248,6 @@ class TestSearchCounterDB(unittest.IsolatedAsyncioTestCase):
         await database.increment_search_count(self.db_path)
         await database.increment_search_count(self.db_path)
         self.assertEqual(await database.get_today_search_count(self.db_path), 2)
-
-
-class TestAskLlmWebContext(unittest.IsolatedAsyncioTestCase):
-    """ask_llm injects web_context into the provider payload (Gemini path)."""
-
-    def setUp(self):
-        self._orig_keys = config.GOOGLE_API_KEYS
-        llm.key_pool.cooldowns.clear()
-
-    def tearDown(self):
-        config.GOOGLE_API_KEYS = self._orig_keys
-        llm.key_pool.cooldowns.clear()
-
-    @patch("httpx.AsyncClient.post")
-    async def test_web_context_in_system_instruction(self, mock_post):
-        mock_response = MagicMock(spec=httpx.Response)
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "candidates": [{"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}]
-        }
-        mock_post.return_value = mock_response
-        config.GOOGLE_API_KEYS = ["dummy_key"]
-
-        await llm.ask_llm(
-            mode="general",
-            history=[{"role": "user", "content": "вопрос"}],
-            web_context="ВЕБ-ПОИСК: свежий факт из интернета",
-        )
-        payload = mock_post.call_args[1]["json"]
-        sys_text = payload["systemInstruction"]["parts"][0]["text"]
-        self.assertIn("ВЕБ-ПОИСК: свежий факт из интернета", sys_text)
 
 
 if __name__ == "__main__":

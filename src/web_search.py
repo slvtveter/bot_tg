@@ -1,19 +1,18 @@
 """
-"Invisible" web search via Tavily (https://tavily.com).
+Web search via Tavily (https://tavily.com), used as a tool the LLM can call.
 
-The bot never shows a "search" button or mode. Instead, for each text turn a
-lightweight router (one fast LLM call) decides whether the question needs fresh
-web facts and, if so, rewrites it into a search query. Tavily results are then
-injected into the LLM's system prompt (RAG) so the answer is grounded, and a
-tiny "(источник: …)" footer is appended.
+There's no "search" button or mode. The general-mode answer is generated with a
+`web_search` function-calling tool (see `llm.answer_with_web_tool`): the model
+itself decides, in the same call where it answers, whether it needs fresh facts.
+When it asks to search, `run_search` runs Tavily and the results are fed back so
+the model grounds its answer; otherwise nothing here runs at all.
 
-Everything here is fail-open: missing key, exhausted daily budget, a trivial
-message, a router that says "no", a Tavily error/timeout, or empty results all
-return None, and the caller simply answers from the model without web grounding.
-Search never blocks or breaks a reply.
+Everything is fail-open: missing key, exhausted daily budget, or a Tavily
+error/timeout/empty result all return None, and the model just answers from its
+own knowledge.
 
-Budget: ``config.TAVILY_DAILY_LIMIT`` caps bot-wide searches per calendar day
-(stored in the ``search_counter`` table) to stay inside the free monthly quota.
+Budget: `config.TAVILY_DAILY_LIMIT` caps bot-wide searches per calendar day
+(stored in the `search_counter` table) to stay inside Tavily's free tier.
 """
 
 import logging
@@ -25,7 +24,6 @@ import httpx
 
 from src import config
 from src.database import get_today_search_count, increment_search_count
-from src.llm import quick_complete
 
 logger = logging.getLogger(__name__)
 
@@ -33,49 +31,14 @@ _TAVILY_URL = "https://api.tavily.com/search"
 _TAVILY_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
 _MAX_RESULTS = 4
 _MAX_SNIPPET = 600  # chars per result, to bound prompt tokens
-_MIN_TEXT_LEN = 8   # shorter messages (greetings, "ок") never need a search
-
-# Router prompt: a fast yes/no classifier + query rewrite. Kept in English (it's
-# internal, model-facing) but it must emit the query in the user's language.
-_ROUTER_PROMPT = (
-    "You are a routing classifier for an assistant. Decide whether answering the "
-    "user's message REQUIRES fresh, real-time or factual information from the web "
-    "(current events, news, prices, exchange rates, weather, sports scores, "
-    "recently released or updated things, anything 'latest'/'current', or facts "
-    "dated after your training cutoff).\n"
-    "Do NOT search for: general knowledge, math, coding, writing/rewriting, "
-    "translation, opinions, advice, or casual conversation the model already "
-    "handles well.\n"
-    "Reply with EXACTLY one line:\n"
-    "- If no web search is needed: NO\n"
-    "- If needed: SEARCH: <a concise web search query, in the user's language>\n\n"
-    'User message:\n"""\n{text}\n"""'
-)
 
 
 @dataclass
-class SearchContext:
-    """Result of a web search: grounding text for the LLM + source URLs."""
+class SearchResult:
+    """Outcome of a web search: grounding text for the LLM + source URLs."""
 
     context: str
     sources: List[str]
-
-
-async def _route(user_text: str) -> Optional[str]:
-    """Ask the fast router model whether to search; return the (rewritten) query
-    or None. Any failure / "NO" / malformed output → None (no search)."""
-    out = await quick_complete(_ROUTER_PROMPT.format(text=user_text[:1000]))
-    if not out:
-        return None
-    out = out.strip()
-    if out.upper().startswith("NO"):
-        return None
-    idx = out.upper().find("SEARCH:")
-    if idx == -1:
-        return None
-    query = out[idx + len("SEARCH:"):].strip()
-    query = query.splitlines()[0].strip().strip('"').strip()
-    return query or None
 
 
 async def _tavily(query: str) -> List[Dict[str, str]]:
@@ -85,7 +48,7 @@ async def _tavily(query: str) -> List[Dict[str, str]]:
         "query": query,
         "search_depth": "basic",   # 1 credit/request (vs 2 for "advanced")
         "max_results": _MAX_RESULTS,
-        "include_answer": False,    # we let our own LLM synthesize the answer
+        "include_answer": False,    # we let the model synthesize the answer
         "topic": "general",
     }
     try:
@@ -115,17 +78,16 @@ async def _tavily(query: str) -> List[Dict[str, str]]:
 
 
 def _build_context(results: List[Dict[str, str]]) -> str:
-    """Render search results as grounding text appended to the system prompt."""
+    """Render search results as grounding text fed back to the model."""
     header = (
-        "Ниже — свежие результаты веб-поиска по запросу пользователя. Опирайся на "
-        "них как на факты, не выдумывай и не противоречь им; если они нерелевантны "
-        "— игнорируй."
+        "Результаты веб-поиска. Опирайся на них как на факты, не выдумывай и не "
+        "противоречь им; если нерелевантны — игнорируй."
     )
     blocks = [
         f"[{i}] {r.get('title', '')}\n{r.get('content', '')}"
         for i, r in enumerate(results, 1)
     ]
-    return "ВЕБ-ПОИСК:\n" + header + "\n\n" + "\n\n".join(blocks)
+    return header + "\n\n" + "\n\n".join(blocks)
 
 
 def sources_footer(sources: List[str]) -> str:
@@ -149,36 +111,26 @@ def sources_footer(sources: List[str]) -> str:
     return f"({label}: " + ", ".join(links) + ")"
 
 
-async def maybe_search(user_text: str) -> Optional[SearchContext]:
+async def run_search(query: str) -> Optional[SearchResult]:
     """
-    Decide whether to search and, if so, run it. Returns grounding context +
-    sources, or None when no search ran (feature off, budget exhausted, trivial
-    message, router said no, or no usable results). Never raises.
+    Execute one web search for the model's tool call: enforce the daily budget,
+    hit Tavily, and return grounding text + sources. Returns None when the
+    feature is off, the budget is spent, or there are no usable results — the
+    caller then lets the model answer without grounding. Never raises.
     """
     if not config.TAVILY_API_KEY:
         return None
-    text = (user_text or "").strip()
-    if len(text) < _MIN_TEXT_LEN:
-        return None
     try:
-        # Check the budget BEFORE the router call: if we can't search anyway,
-        # don't waste a Gemini call deciding to.
         if await get_today_search_count() >= config.TAVILY_DAILY_LIMIT:
             logger.info("Web search skipped: daily Tavily limit reached")
             return None
-
-        query = await _route(text)
-        if not query:
-            return None
-
         results = await _tavily(query)
         if not results:
             return None
-
         await increment_search_count()
         sources = [r["url"] for r in results if r.get("url")]
         logger.info(f"Web search used: query={query!r}, {len(results)} results")
-        return SearchContext(context=_build_context(results), sources=sources)
+        return SearchResult(context=_build_context(results), sources=sources)
     except Exception as e:
-        logger.warning(f"maybe_search failed, answering without web: {e}")
+        logger.warning(f"run_search failed, answering without web: {e}")
         return None
