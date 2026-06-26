@@ -332,7 +332,9 @@ def _compose_system_prompt(mode: str, language: str, max_length: str) -> str:
     """Build the full system prompt for a mode: base persona + language + length
     constraint. Shared by ask_llm and answer_with_web_tool so both paths behave
     identically on language and verbosity."""
+    from datetime import date
     system_prompt = SYSTEM_PROMPTS.get(mode, SYSTEM_PROMPTS["general"])
+    system_prompt += f"\nСегодня {date.today().strftime('%d.%m.%Y')}."
     if language == "en":
         system_prompt += "\nIMPORTANT: You MUST reply in English language only."
     else:
