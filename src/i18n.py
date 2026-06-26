@@ -16,13 +16,8 @@ DEFAULT_LANG = "ru"
 _MODES: Dict[str, Dict[str, str]] = {
     "general": {
         "ru": "💬 Общение", "en": "💬 Chat",
-        "tag_ru": "Универсальный помощник по любым вопросам",
-        "tag_en": "A versatile assistant for any question",
-    },
-    "nutrition": {
-        "ru": "🍏 Питание", "en": "🍏 Nutrition",
-        "tag_ru": "Калорийность и БЖУ блюд по фото или описанию",
-        "tag_en": "Calories and macros from a photo or description",
+        "tag_ru": "Универсальный помощник по любым вопросам, включая питание",
+        "tag_en": "A versatile assistant for any question, nutrition included",
     },
     "math": {
         "ru": "🧮 Математика", "en": "🧮 Math",
@@ -49,12 +44,13 @@ _MODES: Dict[str, Dict[str, str]] = {
 MODE_KEYS: List[str] = list(_MODES.keys())
 DEFAULT_MODE = "general"
 
-# Modes surfaced in the UI (bottom keyboard + /mode picker). All six prompts
-# still exist and work internally, but the product is now "one smart default
-# assistant + Nutrition as the single flagship tool": the default brain already
-# handles math/code/writing/general well without the user picking a mode, so only
-# these two are shown. Add a key here to re-expose another mode as a button.
-VISIBLE_MODES: List[str] = ["general", "nutrition"]
+# Modes surfaced in the UI (bottom keyboard + /mode picker). The remaining
+# prompts (math/fitness/writing/code) still exist and work internally, but the
+# product is now "one smart default assistant": the general brain handles
+# math/code/writing AND nutrition on its own (a food photo or meal description is
+# auto-analysed — see SYSTEM_PROMPTS["general"]), so the user never picks a mode.
+# Add a key here to re-expose another mode as a button.
+VISIBLE_MODES: List[str] = ["general"]
 
 # Bottom-keyboard utility buttons (not modes).
 _UTIL = {
@@ -152,9 +148,9 @@ STRINGS: Dict[str, Dict[str, str]] = {
             "Я <b>Nela AI</b> — умный ИИ-ассистент. Просто пиши, что нужно — посчитать, объяснить, "
             "переписать текст, помочь с кодом, разобраться в чём угодно. Понимаю "
             "фото и голосовые.\n\n"
-            "🍏 <b>Питание</b> — пришли фото блюда или опиши его: посчитаю калории "
-            "и БЖУ и буду вести дневник (/week — итоги за неделю). Включается "
-            "кнопкой снизу.\n\n"
+            "🍏 <b>Питание</b> — просто пришли фото блюда или опиши его: сам посчитаю "
+            "калории и БЖУ и буду вести дневник (/today — за сегодня, /week — за "
+            "неделю). Ничего переключать не нужно.\n\n"
             "Справка — /help."
         ),
         "en": (
@@ -162,9 +158,9 @@ STRINGS: Dict[str, Dict[str, str]] = {
             "I'm <b>Nela AI</b> — your smart AI assistant. Just tell me what you need — calculate, explain, "
             "rewrite text, help with code, figure anything out. I understand photos "
             "and voice messages.\n\n"
-            "🍏 <b>Nutrition</b> — send a photo of your meal or describe it: I'll "
-            "count calories and macros and keep a diary (/week for weekly totals). "
-            "Turn it on with the button below.\n\n"
+            "🍏 <b>Nutrition</b> — just send a photo of your meal or describe it: I'll "
+            "count calories and macros and keep a diary on my own (/today for today, "
+            "/week for the week). No mode to switch.\n\n"
             "Help — /help."
         ),
     },
@@ -181,8 +177,14 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "en": "History cleared — starting fresh. 🧹",
     },
     "week_none": {
-        "ru": "За последние 7 дней вы не отправляли блюда на анализ в режиме 🍏 Питание.",
-        "en": "You haven't sent any meals for analysis in 🍏 Nutrition mode in the last 7 days.",
+        "ru": (
+            "За последние 7 дней вы не отправляли блюда на анализ. "
+            "Пришлите фото или описание еды — я посчитаю КБЖУ."
+        ),
+        "en": (
+            "You haven't sent any meals for analysis in the last 7 days. "
+            "Send a food photo or description — I'll count the macros."
+        ),
     },
     "week_body": {
         "ru": (
@@ -287,8 +289,8 @@ STRINGS: Dict[str, Dict[str, str]] = {
             "❓ <b>Справка</b>\n\n"
             "Просто напиши сообщение — я помогу с вопросами, текстом, кодом, "
             "математикой и объяснениями. Понимаю фото и голосовые.\n\n"
-            "🍏 <b>Питание</b> (кнопка снизу) — пришли фото блюда или опиши его: дам "
-            "КБЖУ и буду вести дневник.\n\n"
+            "🍏 <b>Питание</b> — просто пришли фото блюда или опиши его: сам дам КБЖУ "
+            "и буду вести дневник. Переключать режимы не нужно.\n\n"
             "<b>Команды</b>\n"
             "/today — итоги питания за сегодня\n"
             "/week — итоги питания за 7 дней\n"
@@ -304,8 +306,8 @@ STRINGS: Dict[str, Dict[str, str]] = {
             "❓ <b>Help</b>\n\n"
             "Just send a message — I'll help with questions, writing, code, math and "
             "explanations. I understand photos and voice messages.\n\n"
-            "🍏 <b>Nutrition</b> (button below) — send a photo of your meal or "
-            "describe it: I'll give calories/macros and keep a diary.\n\n"
+            "🍏 <b>Nutrition</b> — just send a photo of your meal or describe it: "
+            "I'll give calories/macros and keep a diary on my own. No mode to switch.\n\n"
             "<b>Commands</b>\n"
             "/today — today's nutrition totals\n"
             "/week — nutrition over the last 7 days\n"
@@ -339,8 +341,14 @@ STRINGS: Dict[str, Dict[str, str]] = {
         ),
     },
     "today_none": {
-        "ru": "Сегодня вы ещё не отправляли блюда на анализ в режиме 🍏 Питание.",
-        "en": "You haven't sent any meals for analysis in 🍏 Nutrition mode today.",
+        "ru": (
+            "Сегодня вы ещё не отправляли блюда на анализ. "
+            "Пришлите фото или описание еды — я посчитаю КБЖУ."
+        ),
+        "en": (
+            "You haven't sent any meals for analysis today. "
+            "Send a food photo or description — I'll count the macros."
+        ),
     },
     "today_body": {
         "ru": (

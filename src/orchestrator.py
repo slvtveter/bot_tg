@@ -2,7 +2,6 @@ from typing import Dict, List, Optional
 
 from src.agents.base import AgentResult, BaseAgent
 from src.agents.generic_agent import GenericAgent
-from src.agents.nutrition_agent import NutritionAgent
 from src.i18n import DEFAULT_MODE, MODE_KEYS
 
 
@@ -10,16 +9,14 @@ class Orchestrator:
     """
     Holds one agent per mode (from the central mode registry) and dispatches a
     request to the agent for the user's current mode. Every mode uses
-    GenericAgent except nutrition, which also logs parsed macros.
+    GenericAgent, which also logs parsed macros when the model analysed a meal —
+    food is handled by the smart general prompt now, not a separate mode.
     """
 
     def __init__(self) -> None:
-        self.agents: Dict[str, BaseAgent] = {}
-        for mode in MODE_KEYS:
-            if mode == "nutrition":
-                self.agents[mode] = NutritionAgent(mode, mode)
-            else:
-                self.agents[mode] = GenericAgent(mode, mode)
+        self.agents: Dict[str, BaseAgent] = {
+            mode: GenericAgent(mode, mode) for mode in MODE_KEYS
+        }
 
     async def route_and_process(
         self,

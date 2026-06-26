@@ -25,7 +25,6 @@ from src.i18n import (
     DEFAULT_MODE,
     MODE_KEYS,
     VISIBLE_MODES,
-    mode_label,
     mode_overview,
     mode_title,
     t,
@@ -35,12 +34,13 @@ from src.i18n import (
 
 def build_main_keyboard(lang: str, current_mode: str = DEFAULT_MODE) -> ReplyKeyboardMarkup:
     """
-    Minimal bottom keyboard: a single mode-toggle button (its label shows the
-    CURRENT mode; tapping it switches between the smart default and Nutrition)
-    plus Settings. Stats and Clear now live inside the Settings panel.
+    Minimal bottom keyboard: just Settings. There's no mode toggle anymore — the
+    smart general assistant handles everything (including auto-analysing food
+    photos), so there's nothing to switch. Stats and Clear live inside the
+    Settings panel. ``current_mode`` is kept for call-site compatibility but no
+    longer affects the keyboard.
     """
-    toggle = f"🔄 {mode_label(current_mode, lang)}"
-    rows = [[toggle, util_label("settings", lang)]]
+    rows = [[util_label("settings", lang)]]
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 

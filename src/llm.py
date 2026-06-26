@@ -42,7 +42,20 @@ SYSTEM_PROMPTS = {
         "Сначала пойми, что человеку на самом деле нужно, затем дай точный, понятный и "
         "честный ответ. Рассуждай аккуратно, проверяй логику и факты. Помогаешь с чем "
         "угодно — объяснить, посоветовать, написать, посчитать, разобраться. Общайся "
-        "по-человечески и тепло, но без лишней болтовни."
+        "по-человечески и тепло, но без лишней болтовни.\n"
+        "ПИТАНИЕ: если человек прислал фото еды или описал конкретное блюдо/приём пищи "
+        "(с продуктами или количеством), автоматически веди себя как опытный нутрициолог "
+        "— оцени калорийность и БЖУ, не дожидаясь отдельной просьбы. Когда продуктов "
+        "несколько, приведи разбивку таблицей (Продукт | Калории | Белки | Жиры | "
+        "Углеводы); если продукт один или вопрос про еду общий — отвечай обычным текстом, "
+        "без таблицы. Цифры — это оценка, так и говори, не выдавай их за аптечно точные. "
+        "Не ставь диагнозов и не назначай лечение; при заболеваниях советуй обратиться к "
+        "врачу.\n"
+        "ТЕХНИЧЕСКОЕ: ТОЛЬКО если ты реально посчитал калорийность конкретного приёма "
+        "пищи, добавь самой последней строкой ответа (без других слов на этой строке) "
+        "итог по всему приёму пищи в формате: "
+        "[NUTRITION_DATA] calories=ЧИСЛО protein=ЧИСЛО fat=ЧИСЛО carbs=ЧИСЛО. "
+        "Для общих вопросов о питании и любых не-пищевых сообщений маркер НЕ добавляй."
     )
     + _FORMATTING_PHILOSOPHY,
     "nutrition": (
@@ -416,8 +429,10 @@ async def _ask_llm_uncapped(
     tokens_map = {"short": 1000, "medium": 2000, "long": 4000}
     max_tokens = tokens_map.get(max_length, 2000)
 
-    # Ensure nutrition mode has enough tokens to avoid truncating tables (unless short length is requested)
-    if mode == "nutrition" and max_length != "short":
+    # Ensure food analysis has enough tokens to avoid truncating КБЖУ tables
+    # (unless short length is requested). general now auto-handles nutrition, so
+    # it needs the same headroom as the legacy nutrition mode.
+    if mode in ("nutrition", "general") and max_length != "short":
         max_tokens = max(max_tokens, 2000)
 
     # Construct the appropriate system prompt with language instruction
@@ -434,7 +449,7 @@ async def _ask_llm_uncapped(
                 "\nIMPORTANT: Reply as BRIEF, CONCISE and SHORT as possible. "
                 "Avoid long intros, greetings, detailed explanations, general reasoning and conclusions. "
                 "Only output the core answer. "
-                "If analyzing food (nutrition mode), provide only the essentials: "
+                "If analyzing food, provide only the essentials: "
                 "a very short nutrition table and a brief recommendation in 1-2 sentences."
             )
         else:
@@ -442,7 +457,7 @@ async def _ask_llm_uncapped(
                 "\nВАЖНО: Отвечай максимально КРАТКО, КОНЦИЗНЫМ и СЖАТЫМ текстом. "
                 "Избегай длинных вступлений, приветствий, подробных объяснений, общих рассуждений и выводов. "
                 "Только самая суть вопроса. "
-                "Если анализируешь еду (режим питания), предоставь только самое главное: "
+                "Если анализируешь еду, предоставь только самое главное: "
                 "очень короткую таблицу КБЖУ и краткий вывод/рекомендацию в 1-2 предложениях."
             )
     elif max_length == "long":
