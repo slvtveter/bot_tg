@@ -26,12 +26,14 @@ class GenericAgent(BaseAgent):
         history: List[Dict[str, str]],
         user_settings: Optional[Dict[str, str]] = None,
         user_id: Optional[int] = None,
+        web_context: Optional[str] = None,
     ) -> AgentResult:
         current_history = history + [{"role": "user", "content": user_input}]
         text, model, prompt_tokens, completion_tokens, latency = await ask_llm(
             mode=self.mode,
             history=current_history,
             user_settings=user_settings,
+            web_context=web_context,
         )
         prompt_tokens = prompt_tokens or 0
         completion_tokens = completion_tokens or 0

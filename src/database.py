@@ -300,6 +300,10 @@ async def _init_schema_turso() -> None:
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
         )""",
+        """CREATE TABLE IF NOT EXISTS search_counter (
+            search_date TEXT PRIMARY KEY,
+            count INTEGER DEFAULT 0
+        )""",
         "CREATE INDEX IF NOT EXISTS idx_stats_user_id ON stats(user_id)",
         "CREATE INDEX IF NOT EXISTS idx_stats_timestamp ON stats(timestamp)",
         "CREATE INDEX IF NOT EXISTS idx_nutrition_log_user_id ON nutrition_log(user_id)",
@@ -463,7 +467,18 @@ async def init_db(db_path: str = DB_PATH) -> None:
                 )
             """)
 
-            # 6. Create Indexes if they do not exist (idx_messages_conv_id is
+            # 6. Create search_counter table: one row per calendar day holding a
+            # bot-wide count of Tavily web searches, used to cap usage against the
+            # free-tier monthly quota (see src/web_search.py). New table, no FK and
+            # no legacy data, so a plain CREATE IF NOT EXISTS is enough.
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS search_counter (
+                    search_date TEXT PRIMARY KEY,
+                    count INTEGER DEFAULT 0
+                )
+            """)
+
+            # 7. Create Indexes if they do not exist (idx_messages_conv_id is
             # created inside _migrate_messages_pseudonymous above).
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_stats_user_id ON stats(user_id);"
@@ -992,6 +1007,43 @@ async def get_today_nutrition_totals(user_id: int, db_path: str = DB_PATH) -> Di
     except Exception as e:
         logger.error(f"Error getting today's nutrition totals for user {user_id}: {e}")
         return {"entries": 0, "calories": 0.0, "protein": 0.0, "fat": 0.0, "carbs": 0.0}
+
+
+async def get_today_search_count(db_path: str = DB_PATH) -> int:
+    """
+    Returns how many Tavily web searches the bot has made today (bot-wide), used
+    to enforce the daily free-tier cap. Returns 0 if no searches yet today, or on
+    any error (fail-open: never block the request because the counter is unreadable).
+    """
+    try:
+        async with get_db_connection(db_path) as db:
+            async with db.execute(
+                "SELECT count FROM search_counter WHERE search_date = date('now')"
+            ) as cursor:
+                row = await cursor.fetchone()
+            return row[0] if row else 0
+    except Exception as e:
+        logger.error(f"Error reading today's search count: {e}")
+        return 0
+
+
+async def increment_search_count(db_path: str = DB_PATH) -> None:
+    """
+    Atomically bumps today's bot-wide web-search counter by one (UPSERT keyed on
+    the calendar date). Called only when a search actually fires.
+    """
+    try:
+        async with get_db_connection(db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO search_counter (search_date, count)
+                VALUES (date('now'), 1)
+                ON CONFLICT(search_date) DO UPDATE SET count = count + 1
+            """
+            )
+            await db.commit()
+    except Exception as e:
+        logger.error(f"Error incrementing search count: {e}")
 
 
 async def get_all_user_ids(db_path: str = DB_PATH) -> List[int]:
