@@ -77,10 +77,13 @@ async def process_text_message(
     # (the agent appends it once). The history is token-trimmed inside ask_llm.
     history = await get_chat_history(user_id=user_id, limit=20)
 
-    # 4. Log the user's message now that prior history has been captured
+    # 3. Log the user's message now that prior history has been captured
     await log_message(user_id=user_id, role="user", content=text)
 
-    # 5. Query Orchestrator (returns the answer plus real LLM telemetry)
+    # 4. Query Orchestrator (returns the answer plus real LLM telemetry). For
+    # general mode this runs the web_search tool path: the model itself decides
+    # whether to search, runs Tavily if so, and the source footer is already on
+    # the returned text.
     response_text, model_name, prompt_tokens, completion_tokens, latency = (
         await orchestrator.route_and_process(
             mode=mode,

@@ -28,6 +28,15 @@ if not GOOGLE_API_KEYS and not OPENROUTER_API_KEY and not GROQ_API_KEY:
         "or OPENROUTER_API_KEY in the environment variables or .env file."
     )
 
+# Tavily web search (https://tavily.com). Powers the "invisible" web-search step:
+# a router decides per-message whether fresh web facts are needed, and if so the
+# results are injected into the prompt (RAG). Left empty disables the feature
+# entirely (the bot just answers from the model, no search). TAVILY_DAILY_LIMIT
+# caps bot-wide searches per calendar day to stay inside the free tier (~1000/mo);
+# once hit, the bot stops searching and answers normally (see src/web_search.py).
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
+TAVILY_DAILY_LIMIT = int(os.getenv("TAVILY_DAILY_LIMIT", "50"))
+
 # Upper bound on concurrent outbound LLM calls. Bounds how hard a burst of users
 # can hit the shared Gemini key pool at once (see src/llm.py _LLM_SEMAPHORE).
 LLM_MAX_CONCURRENCY = int(os.getenv("LLM_MAX_CONCURRENCY", "6"))

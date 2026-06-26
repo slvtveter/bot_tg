@@ -328,6 +328,254 @@ def is_response_complete(text: str) -> bool:
     return True
 
 
+def _compose_system_prompt(mode: str, language: str, max_length: str) -> str:
+    """Build the full system prompt for a mode: base persona + language + length
+    constraint. Shared by ask_llm and answer_with_web_tool so both paths behave
+    identically on language and verbosity."""
+    system_prompt = SYSTEM_PROMPTS.get(mode, SYSTEM_PROMPTS["general"])
+    if language == "en":
+        system_prompt += "\nIMPORTANT: You MUST reply in English language only."
+    else:
+        system_prompt += "\nВАЖНО: Вы ДОЛЖНЫ отвечать только на русском языке."
+
+    if max_length == "short":
+        if language == "en":
+            system_prompt += (
+                "\nIMPORTANT: Reply as BRIEF, CONCISE and SHORT as possible. "
+                "Avoid long intros, greetings, detailed explanations, general reasoning and conclusions. "
+                "Only output the core answer. "
+                "If analyzing food, provide only the essentials: "
+                "a very short nutrition table and a brief recommendation in 1-2 sentences."
+            )
+        else:
+            system_prompt += (
+                "\nВАЖНО: Отвечай максимально КРАТКО, КОНЦИЗНЫМ и СЖАТЫМ текстом. "
+                "Избегай длинных вступлений, приветствий, подробных объяснений, общих рассуждений и выводов. "
+                "Только самая суть вопроса. "
+                "Если анализируешь еду, предоставь только самое главное: "
+                "очень короткую таблицу КБЖУ и краткий вывод/рекомендацию в 1-2 предложениях."
+            )
+    elif max_length == "long":
+        if language == "en":
+            system_prompt += (
+                "\nIMPORTANT: Provide a very detailed, comprehensive and in-depth answer, "
+                "covering all nuances, reasons, consequences and recommendations."
+            )
+        else:
+            system_prompt += (
+                "\nВАЖНО: Давай максимально подробный, развернутый и глубокий ответ, "
+                "детально описывая все нюансы, причины, последствия и рекомендации."
+            )
+    else:  # medium
+        if language == "en":
+            system_prompt += "\nIMPORTANT: Answer in a moderate, balanced length."
+        else:
+            system_prompt += "\nВАЖНО: Отвечай в умеренном, сбалансированном объеме."
+    return system_prompt
+
+
+# Models tried for the tool-calling (general) path, quota-first. flash-lite leads
+# (highest free-tier daily quota) and was verified to emit correct web_search
+# tool calls — searching for fresh facts, answering chat directly. Falls back to
+# gemini-2.5-flash if flash-lite has no active key left.
+_TOOL_MODELS = ["gemini-3.1-flash-lite", "gemini-2.5-flash"]
+
+# Gemini function declaration for the web_search tool. The model decides, in the
+# same call where it would answer, whether to invoke this.
+_WEB_SEARCH_TOOL = {
+    "functionDeclarations": [
+        {
+            "name": "web_search",
+            "description": (
+                "Search the web for fresh, real-time or factual information "
+                "(current events, news, prices, exchange rates, weather, recent "
+                "releases, anything 'latest'/'current'). Call this ONLY when the "
+                "answer needs up-to-date facts you don't reliably know. For "
+                "general knowledge, math, coding, writing or chat, answer "
+                "directly WITHOUT calling it."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Concise web search query, in the user's language.",
+                    }
+                },
+                "required": ["query"],
+            },
+        }
+    ]
+}
+
+
+def _gemini_function_call(candidate: Dict[str, Any]) -> Optional[str]:
+    """Return the web_search query if the candidate is a tool call, else None."""
+    for part in candidate.get("content", {}).get("parts", []):
+        fc = part.get("functionCall")
+        if fc and fc.get("name") == "web_search":
+            return (fc.get("args") or {}).get("query")
+    return None
+
+
+def _gemini_text(candidate: Dict[str, Any]) -> str:
+    parts = candidate.get("content", {}).get("parts", [])
+    return "".join(p.get("text", "") for p in parts).strip()
+
+
+def _gemini_usage(data: Dict[str, Any]) -> Tuple[int, int]:
+    u = data.get("usageMetadata", {})
+    return u.get("promptTokenCount", 0) or 0, u.get("candidatesTokenCount", 0) or 0
+
+
+async def answer_with_web_tool(
+    history: List[Dict[str, str]],
+    user_settings: Optional[Dict[str, str]] = None,
+) -> Tuple[Optional[str], Optional[str], int, int, float, List[str]]:
+    """
+    General-mode answer with an optional web_search tool (Gemini function
+    calling). One model call decides AND answers; only when the model asks to
+    search do we run Tavily and make a SECOND call with the results. Returns
+    (text, model, prompt_tokens, completion_tokens, latency, sources). text is
+    None on ANY failure, so GenericAgent falls back to the full ask_llm chain
+    (which has no search) — the feature never blocks or breaks a reply.
+    """
+    from src.web_search import run_search  # local import avoids an import cycle
+
+    if not config.GOOGLE_API_KEYS:
+        return (None, None, 0, 0, 0.0, [])
+
+    creativity = (user_settings or {}).get("creativity", "balanced")
+    max_length = (user_settings or {}).get("max_length", "medium")
+    language = (user_settings or {}).get("language", "ru")
+
+    temperature = {"strict": 0.1, "balanced": 0.4, "creative": 0.9}.get(creativity, 0.4)
+    max_tokens = {"short": 1000, "medium": 2000, "long": 4000}.get(max_length, 2000)
+    if max_length != "short":
+        max_tokens = max(max_tokens, 2000)  # headroom for КБЖУ tables
+
+    system_prompt = _compose_system_prompt("general", language, max_length)
+
+    # Decide whether to even offer the tool: if the feature is off or the daily
+    # budget is spent, don't attach it — the model then just answers from memory
+    # in a single call (no point letting it ask for a search we can't run).
+    attach_tool = bool(config.TAVILY_API_KEY)
+    if attach_tool:
+        from src.database import get_today_search_count
+
+        if await get_today_search_count() >= config.TAVILY_DAILY_LIMIT:
+            attach_tool = False
+    if attach_tool:
+        system_prompt += (
+            "\nЕсли для точного ответа нужны свежие/актуальные факты (новости, "
+            "цены, погода, недавние события) — вызови инструмент web_search; "
+            "иначе отвечай сразу, без него."
+        )
+
+    history = trim_history(history)
+    contents = format_history_for_gemini(history)
+    if not contents:
+        return (None, None, 0, 0, 0.0, [])
+
+    base_payload: Dict[str, Any] = {
+        "contents": contents,
+        "systemInstruction": {"parts": [{"text": system_prompt}]},
+        "generationConfig": {"maxOutputTokens": max_tokens, "temperature": temperature},
+    }
+    if attach_tool:
+        base_payload["tools"] = [_WEB_SEARCH_TOOL]
+
+    start_time = time.time()
+    async with _LLM_SEMAPHORE:
+        for model in _TOOL_MODELS:
+            if model in disabled_models:
+                continue
+            keys = key_pool.get_active_keys(model)
+            keys = keys.copy()
+            random.shuffle(keys)
+            url_tmpl = (
+                "https://generativelanguage.googleapis.com"
+                f"/v1beta/models/{model}:generateContent?key={{key}}"
+            )
+            for key in keys:
+                try:
+                    url = url_tmpl.format(key=key)
+                    async with _shared_http() as client:
+                        resp = await client.post(
+                            url, json=base_payload, timeout=_FAST_TIMEOUT
+                        )
+                    if resp.status_code != 200:
+                        continue
+                    data = resp.json()
+                    candidates = data.get("candidates", [])
+                    if not candidates:
+                        continue
+                    candidate = candidates[0]
+                    p_tok, c_tok = _gemini_usage(data)
+
+                    query = _gemini_function_call(candidate)
+                    if not query:
+                        # Model answered directly — no search needed. 1 call.
+                        text = _gemini_text(candidate)
+                        if not text:
+                            continue
+                        return (
+                            text, model, p_tok, c_tok,
+                            time.time() - start_time, [],
+                        )
+
+                    # Model asked to search: run Tavily, feed results back.
+                    result = await run_search(query)
+                    grounding = (
+                        result.context if result
+                        else "Поиск недоступен или ничего не найдено."
+                    )
+                    sources = result.sources if result else []
+                    followup = {
+                        "contents": contents
+                        + [
+                            candidate["content"],  # the model's functionCall turn
+                            {
+                                "role": "user",
+                                "parts": [
+                                    {
+                                        "functionResponse": {
+                                            "name": "web_search",
+                                            "response": {"results": grounding},
+                                        }
+                                    }
+                                ],
+                            },
+                        ],
+                        "systemInstruction": base_payload["systemInstruction"],
+                        "generationConfig": base_payload["generationConfig"],
+                        "tools": [_WEB_SEARCH_TOOL],
+                    }
+                    async with _shared_http() as client:
+                        resp2 = await client.post(
+                            url, json=followup, timeout=_FAST_TIMEOUT
+                        )
+                    if resp2.status_code != 200:
+                        continue
+                    data2 = resp2.json()
+                    cands2 = data2.get("candidates", [])
+                    if not cands2:
+                        continue
+                    text = _gemini_text(cands2[0])
+                    if not text:
+                        continue
+                    p2, c2 = _gemini_usage(data2)
+                    return (
+                        text, model, p_tok + p2, c_tok + c2,
+                        time.time() - start_time, sources,
+                    )
+                except Exception as e:
+                    logger.warning(f"answer_with_web_tool failed on {model}/{key[:8]}: {e}")
+                    continue
+
+    return (None, None, 0, 0, time.time() - start_time, [])
+
+
 async def ask_llm(
     mode: str,
     history: List[Dict[str, str]],
@@ -435,47 +683,8 @@ async def _ask_llm_uncapped(
     if mode in ("nutrition", "general") and max_length != "short":
         max_tokens = max(max_tokens, 2000)
 
-    # Construct the appropriate system prompt with language instruction
-    system_prompt = SYSTEM_PROMPTS.get(mode, SYSTEM_PROMPTS["general"])
-    if language == "en":
-        system_prompt += "\nIMPORTANT: You MUST reply in English language only."
-    else:
-        system_prompt += "\nВАЖНО: Вы ДОЛЖНЫ отвечать только на русском языке."
-
-    # Append length constraint instructions to the system prompt
-    if max_length == "short":
-        if language == "en":
-            system_prompt += (
-                "\nIMPORTANT: Reply as BRIEF, CONCISE and SHORT as possible. "
-                "Avoid long intros, greetings, detailed explanations, general reasoning and conclusions. "
-                "Only output the core answer. "
-                "If analyzing food, provide only the essentials: "
-                "a very short nutrition table and a brief recommendation in 1-2 sentences."
-            )
-        else:
-            system_prompt += (
-                "\nВАЖНО: Отвечай максимально КРАТКО, КОНЦИЗНЫМ и СЖАТЫМ текстом. "
-                "Избегай длинных вступлений, приветствий, подробных объяснений, общих рассуждений и выводов. "
-                "Только самая суть вопроса. "
-                "Если анализируешь еду, предоставь только самое главное: "
-                "очень короткую таблицу КБЖУ и краткий вывод/рекомендацию в 1-2 предложениях."
-            )
-    elif max_length == "long":
-        if language == "en":
-            system_prompt += (
-                "\nIMPORTANT: Provide a very detailed, comprehensive and in-depth answer, "
-                "covering all nuances, reasons, consequences and recommendations."
-            )
-        else:
-            system_prompt += (
-                "\nВАЖНО: Давай максимально подробный, развернутый и глубокий ответ, "
-                "детально описывая все нюансы, причины, последствия и рекомендации."
-            )
-    else:  # medium
-        if language == "en":
-            system_prompt += "\nIMPORTANT: Answer in a moderate, balanced length."
-        else:
-            system_prompt += "\nВАЖНО: Отвечай в умеренном, сбалансированном объеме."
+    # Construct the appropriate system prompt (mode + language + length).
+    system_prompt = _compose_system_prompt(mode, language, max_length)
 
     start_time = time.time()
 
