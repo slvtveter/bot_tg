@@ -151,21 +151,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         last_name=user.last_name,
     )
 
-    # Single mode-toggle button: its label shows the CURRENT mode; tapping it
-    # switches between the smart default (general) and Nutrition, then resends
-    # the keyboard so the label updates.
-    if text.startswith("🔄"):
-        from src.handlers.commands import build_main_keyboard
-
-        ctx = await get_user_context(user_id)
-        new_mode = "general" if ctx["mode"] == "nutrition" else "nutrition"
-        await set_user_mode(user_id, new_mode)
-        await update.message.reply_html(
-            t("mode_changed", ctx["language"], title=mode_title(new_mode, ctx["language"])),
-            reply_markup=build_main_keyboard(ctx["language"], new_mode),
-        )
-        return
-
     # Route bottom-keyboard buttons (matched in either language) via the
     # registry, so switching the interface language never breaks the buttons.
     button = resolve_button(text)

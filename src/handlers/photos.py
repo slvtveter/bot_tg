@@ -66,32 +66,11 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         image_bytes = await photo_file.download_as_bytearray()
         image_base64 = base64.b64encode(image_bytes).decode("utf-8")
 
-        # Prepare the vision prompt based on the user's active mode
-        if mode == "nutrition":
-            vision_prompt = (
-                "Ты — эксперт по питанию. Проанализируй еду на этой фотографии. "
-                "Обязательно составь подробную раскладку по ингредиентам/продуктам. "
-                "Используй СТРОГО правильный Markdown-формат. Пример правильной таблицы:\n\n"
-                "## 📊 Таблица КБЖУ\n\n"
-                "| Продукт | Вес (г) | Белки (г) | Жиры (г) | Углеводы (г) | Калории (ккал) |\n"
-                "|:--------|--------:|----------:|---------:|-------------:|---------------:|\n"
-                "| Яблоко  | 180     | 0.5       | 0.4      | 24.8         | 94             |\n\n"
-                "ВАЖНО: Таблица ОБЯЗАТЕЛЬНО должна иметь строку-разделитель |---|---| после заголовка!\n"
-                "После таблицы добавь:\n"
-                "## 📋 Итого\n"
-                "Общую сумму КБЖУ **жирным текстом**.\n"
-                "## 💡 Рекомендации\n"
-                "Краткий вывод о пользе и рекомендации.\n\n"
-                "В САМОМ КОНЦЕ ответа, на отдельной последней строке, ОБЯЗАТЕЛЬНО выведи "
-                "итоговые цифры по всему приёму пищи в строго следующем техническом формате "
-                "(без дополнительных слов на этой строке): "
-                "[NUTRITION_DATA] calories=ЧИСЛО protein=ЧИСЛО fat=ЧИСЛО carbs=ЧИСЛО"
-            )
-            if caption:
-                vision_prompt += (
-                    f"\nУчти дополнительный контекст/запрос от пользователя: {caption}"
-                )
-        elif mode == "math":
+        # Prepare the vision prompt based on the user's active mode. The default
+        # (general) path auto-detects food: a meal photo gets the full КБЖУ
+        # nutritionist analysis (table + NUTRITION_DATA marker for the diary),
+        # anything else is just described — so the user never has to pick a mode.
+        if mode == "math":
             vision_prompt = (
                 f"Реши математическую задачу на изображении. Дополнительный запрос: {caption}"
                 if caption
@@ -117,12 +96,35 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 "и предложи исправление с корректным кодом."
             )
             vision_prompt = f"{base} Запрос пользователя: {caption}" if caption else base
-        else:  # general mode
+        else:  # general (smart default): food → nutritionist, else describe
             vision_prompt = (
-                f"Ответь на запрос касательно этого изображения: {caption}"
-                if caption
-                else "Подробно опиши, что изображено на этой фотографии."
+                "Посмотри на фотографию и сначала определи, еда ли это (блюдо, "
+                "продукты, приём пищи).\n\n"
+                "ЕСЛИ ЭТО ЕДА — действуй как эксперт-нутрициолог: составь подробную "
+                "раскладку по ингредиентам/продуктам строго в правильном Markdown. "
+                "Пример таблицы:\n\n"
+                "## 📊 Таблица КБЖУ\n\n"
+                "| Продукт | Вес (г) | Белки (г) | Жиры (г) | Углеводы (г) | Калории (ккал) |\n"
+                "|:--------|--------:|----------:|---------:|-------------:|---------------:|\n"
+                "| Яблоко  | 180     | 0.5       | 0.4      | 24.8         | 94             |\n\n"
+                "ВАЖНО: у таблицы ОБЯЗАТЕЛЬНО должна быть строка-разделитель "
+                "|---|---| после заголовка!\n"
+                "После таблицы добавь:\n"
+                "## 📋 Итого\n"
+                "Общую сумму КБЖУ **жирным текстом**.\n"
+                "## 💡 Рекомендации\n"
+                "Краткий вывод о пользе и рекомендации.\n"
+                "В САМОМ КОНЦЕ ответа, на отдельной последней строке, ОБЯЗАТЕЛЬНО "
+                "выведи итоговые цифры по всему приёму пищи в строго следующем "
+                "техническом формате (без дополнительных слов на этой строке): "
+                "[NUTRITION_DATA] calories=ЧИСЛО protein=ЧИСЛО fat=ЧИСЛО carbs=ЧИСЛО\n\n"
+                "ЕСЛИ ЭТО НЕ ЕДА — просто ответь на запрос об изображении или "
+                "подробно опиши, что на нём, и НЕ добавляй строку [NUTRITION_DATA]."
             )
+            if caption:
+                vision_prompt += (
+                    f"\n\nДополнительный контекст/запрос от пользователя: {caption}"
+                )
 
         # 2. Log user action
         user_log_content = f"[{mode.upper()} PHOTO] {caption}".strip()
@@ -146,7 +148,10 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             )
         )
 
-        if response_text and mode == "nutrition":
+        # Always strip/parse the marker: the model appends it only when it
+        # actually analysed a meal (works in the smart general mode now), so a
+        # non-food photo simply yields no totals and nothing is logged.
+        if response_text:
             response_text, totals = extract_nutrition_totals(response_text)
             if totals:
                 await log_nutrition_entry(
