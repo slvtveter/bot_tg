@@ -21,11 +21,6 @@ class BaseAgent(ABC):
         history: List[Dict[str, str]],
         user_settings: Optional[Dict[str, str]] = None,
         user_id: Optional[int] = None,
-        web_context: Optional[str] = None,
     ) -> AgentResult:
-        """Process input and return (answer, model, prompt_tokens, completion_tokens, latency).
-
-        ``web_context`` is optional web-search grounding (RAG) injected into the
-        LLM's system prompt; None when no search ran for this turn.
-        """
+        """Process input and return (answer, model, prompt_tokens, completion_tokens, latency)."""
         ...
