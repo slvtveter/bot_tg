@@ -148,7 +148,13 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         cooldown_statuses = []
 
         for i, key in enumerate(config.GOOGLE_API_KEYS):
-            cooldown_until = key_pool.cooldowns.get(key, 0.0)
+            # cooldowns are keyed by (key, model) pairs — a key can be cooling
+            # down on one model while still serving others — so scan every entry
+            # for this key and surface its latest active cooldown.
+            cooldown_until = max(
+                [until for (k, _m), until in key_pool.cooldowns.items() if k == key],
+                default=0.0,
+            )
             if cooldown_until > now:
                 remaining = cooldown_until - now
                 cooldown_statuses.append(

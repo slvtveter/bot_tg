@@ -28,12 +28,14 @@ if not GOOGLE_API_KEYS and not OPENROUTER_API_KEY and not GROQ_API_KEY:
         "or OPENROUTER_API_KEY in the environment variables or .env file."
     )
 
-# Tavily web search (https://tavily.com). Powers the "invisible" web-search step:
-# a router decides per-message whether fresh web facts are needed, and if so the
-# results are injected into the prompt (RAG). Left empty disables the feature
-# entirely (the bot just answers from the model, no search). TAVILY_DAILY_LIMIT
-# caps bot-wide searches per calendar day to stay inside the free tier (~1000/mo);
-# once hit, the bot stops searching and answers normally (see src/web_search.py).
+# Tavily web search (https://tavily.com), exposed to the model as a function-
+# calling tool (see llm.answer_with_web_tool / src/web_search.py): in the same
+# call where it answers, the general model decides whether it needs fresh facts
+# and, if so, emits a web_search tool call we run and feed back as grounding.
+# Left empty disables the feature entirely (the model just answers from its own
+# knowledge). TAVILY_DAILY_LIMIT caps bot-wide searches per calendar day to stay
+# inside the free tier (~1000/mo); once hit, the tool isn't offered and the bot
+# answers normally (see src/web_search.py).
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 TAVILY_DAILY_LIMIT = int(os.getenv("TAVILY_DAILY_LIMIT", "50"))
 
