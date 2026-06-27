@@ -2,10 +2,10 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from src.database import (
-    clear_chat_history,
     get_user_language,
     get_user_mode,
     get_user_settings,
+    reset_chat_context,
     set_user_setting,
 )
 from src.handlers.commands import build_main_keyboard
@@ -81,7 +81,7 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
     if data == "settings_clear":
         lang = await get_user_language(user_id)
-        await clear_chat_history(user_id)
+        await reset_chat_context(user_id)
         await query.message.reply_html(t("clear_done", lang))
         return
 

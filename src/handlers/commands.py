@@ -11,7 +11,7 @@ from telegram.ext import ContextTypes
 from src import config
 from src.database import (
     add_feedback,
-    clear_chat_history,
+    reset_chat_context,
     get_usage_stats,
     get_user_activity_summary,
     get_user_language,
@@ -86,7 +86,7 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not user or not update.message:
         return
 
-    await clear_chat_history(user.id)
+    await reset_chat_context(user.id)
     lang = await get_user_language(user.id)
     await update.message.reply_html(t("clear_done", lang))
 

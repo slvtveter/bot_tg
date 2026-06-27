@@ -56,7 +56,7 @@ VISIBLE_MODES: List[str] = ["general"]
 _UTIL = {
     "settings": {"ru": "⚙️ Настройки", "en": "⚙️ Settings"},
     "stats": {"ru": "📊 Статистика", "en": "📊 Stats"},
-    "clear": {"ru": "🧹 Очистить чат", "en": "🧹 Clear chat"},
+    "clear": {"ru": "🆕 Новый чат", "en": "🆕 New chat"},
 }
 
 
@@ -173,8 +173,20 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "en": "Choose the bot mode:",
     },
     "clear_done": {
-        "ru": "История очищена — начинаем с чистого листа. 🧹",
-        "en": "History cleared — starting fresh. 🧹",
+        "ru": "Начинаем с чистого листа. 🆕",
+        "en": "Starting fresh. 🆕",
+    },
+    "remind_set": {
+        "ru": "⏰ Напомню в {time} (UTC). Напоминание: «{text}»",
+        "en": "⏰ I'll remind you at {time} (UTC). Reminder: «{text}»",
+    },
+    "remind_usage": {
+        "ru": "Использование: /remind ЧЧ:ММ текст напоминания\nПример: /remind 18:00 покушать",
+        "en": "Usage: /remind HH:MM reminder text\nExample: /remind 18:00 eat lunch",
+    },
+    "remind_fired": {
+        "ru": "⏰ Напоминание: {text}",
+        "en": "⏰ Reminder: {text}",
     },
     "week_none": {
         "ru": (

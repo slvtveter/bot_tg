@@ -37,6 +37,7 @@ from src.handlers import (
     voice_handler,
     week_command,
 )
+from src.handlers.reminders import check_reminders, remind_command
 
 # Set up logging
 logging.basicConfig(
@@ -173,6 +174,7 @@ def main():
     # Register Command Handlers
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("clear", clear_command))
+    app.add_handler(CommandHandler("remind", remind_command))
     app.add_handler(CommandHandler("week", week_command))
     app.add_handler(CommandHandler("today", today_command))
     app.add_handler(CommandHandler("mode", mode_command))
@@ -202,6 +204,9 @@ def main():
     # Global safety net: any unhandled exception in a handler routes here instead
     # of failing silently, so the user always gets some response.
     app.add_error_handler(error_handler)
+
+    # Background job: check and fire due reminders every 60 seconds.
+    app.job_queue.run_repeating(check_reminders, interval=60, first=10)
 
     if config.WEBHOOK_URL:
         # Webhook mode: Telegram pushes updates to us over HTTPS. Used on

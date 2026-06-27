@@ -268,6 +268,7 @@ async def _init_schema_turso() -> None:
             creativity TEXT DEFAULT 'balanced',
             language TEXT DEFAULT 'ru',
             message_count INTEGER DEFAULT 0,
+            context_reset_id INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )""",
@@ -303,6 +304,14 @@ async def _init_schema_turso() -> None:
         """CREATE TABLE IF NOT EXISTS search_counter (
             search_date TEXT PRIMARY KEY,
             count INTEGER DEFAULT 0
+        )""",
+        """CREATE TABLE IF NOT EXISTS reminders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            remind_at TEXT NOT NULL,
+            text TEXT NOT NULL,
+            sent INTEGER DEFAULT 0,
+            FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
         )""",
         "CREATE INDEX IF NOT EXISTS idx_stats_user_id ON stats(user_id)",
         "CREATE INDEX IF NOT EXISTS idx_stats_timestamp ON stats(timestamp)",
@@ -387,6 +396,11 @@ async def init_db(db_path: str = DB_PATH) -> None:
                 await db.execute("ALTER TABLE users ADD COLUMN last_seen TIMESTAMP;")
                 await db.execute(
                     "UPDATE users SET last_seen = created_at WHERE last_seen IS NULL;"
+                )
+            if "context_reset_id" not in existing_columns:
+                logger.info("Migrating users table: adding context_reset_id column")
+                await db.execute(
+                    "ALTER TABLE users ADD COLUMN context_reset_id INTEGER DEFAULT 0;"
                 )
 
             # 2. Bring messages to the pseudonymous (conv_id) schema and ensure
@@ -475,6 +489,18 @@ async def init_db(db_path: str = DB_PATH) -> None:
                 CREATE TABLE IF NOT EXISTS search_counter (
                     search_date TEXT PRIMARY KEY,
                     count INTEGER DEFAULT 0
+                )
+            """)
+
+            # 8. Create reminders table for user-set one-time reminders.
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS reminders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    remind_at TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    sent INTEGER DEFAULT 0,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
                 )
             """)
 
@@ -900,26 +926,53 @@ async def clear_chat_history(user_id: int, db_path: str = DB_PATH) -> None:
         raise
 
 
+async def reset_chat_context(user_id: int, db_path: str = DB_PATH) -> None:
+    """Sets context_reset_id to the current max message id for this user.
+    Messages before this point are invisible to the model but stay in the DB."""
+    try:
+        async with get_db_connection(db_path) as db:
+            async with db.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM messages WHERE conv_id = ?",
+                (_conv_id(user_id),),
+            ) as cursor:
+                row = await cursor.fetchone()
+            max_id = row[0] if row else 0
+            await db.execute(
+                "UPDATE users SET context_reset_id = ? WHERE user_id = ?",
+                (max_id, user_id),
+            )
+            await db.commit()
+    except Exception as e:
+        logger.error(f"Error resetting chat context for user {user_id}: {e}")
+
+
 async def get_chat_history(
     user_id: int, limit: int = 15, db_path: str = DB_PATH
 ) -> List[Dict[str, str]]:
     """
     Queries the last N messages for a user (ordered chronologically)
     formatted as a list of dicts with 'role' and 'content'.
+    Only returns messages after the last context reset (context_reset_id).
     Uses the idx_messages_conv_id index to optimize retrieval.
     """
     try:
         async with get_db_connection(db_path) as db:
             async with db.execute(
+                "SELECT COALESCE(context_reset_id, 0) FROM users WHERE user_id = ?",
+                (user_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+            reset_id = row[0] if row else 0
+            async with db.execute(
                 """
                 SELECT role, content FROM (
                     SELECT id, role, content FROM messages
-                    WHERE conv_id = ?
+                    WHERE conv_id = ? AND id > ?
                     ORDER BY id DESC
                     LIMIT ?
                 ) ORDER BY id ASC
             """,
-                (_conv_id(user_id), limit),
+                (_conv_id(user_id), reset_id, limit),
             ) as cursor:
                 rows = await cursor.fetchall()
                 return [{"role": row[0], "content": row[1]} for row in rows]
@@ -1211,3 +1264,48 @@ async def get_admin_overview(db_path: str = DB_PATH) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Error building admin overview: {e}")
     return overview
+
+
+async def add_reminder(
+    user_id: int, remind_at: str, text: str, db_path: str = DB_PATH
+) -> None:
+    """Stores a one-time reminder. remind_at is ISO datetime string in UTC."""
+    try:
+        async with get_db_connection(db_path) as db:
+            await db.execute(
+                "INSERT INTO reminders (user_id, remind_at, text) VALUES (?, ?, ?)",
+                (user_id, remind_at, text),
+            )
+            await db.commit()
+    except Exception as e:
+        logger.error(f"Error adding reminder for user {user_id}: {e}")
+        raise
+
+
+async def get_pending_reminders(db_path: str = DB_PATH) -> List[Dict]:
+    """Returns unsent reminders whose remind_at <= current UTC time."""
+    try:
+        async with get_db_connection(db_path) as db:
+            async with db.execute(
+                """
+                SELECT id, user_id, text FROM reminders
+                WHERE sent = 0 AND remind_at <= datetime('now')
+                """,
+            ) as cursor:
+                rows = await cursor.fetchall()
+        return [{"id": r[0], "user_id": r[1], "text": r[2]} for r in rows]
+    except Exception as e:
+        logger.error(f"Error fetching pending reminders: {e}")
+        return []
+
+
+async def mark_reminder_sent(reminder_id: int, db_path: str = DB_PATH) -> None:
+    """Marks a reminder as sent so it won't fire again."""
+    try:
+        async with get_db_connection(db_path) as db:
+            await db.execute(
+                "UPDATE reminders SET sent = 1 WHERE id = ?", (reminder_id,)
+            )
+            await db.commit()
+    except Exception as e:
+        logger.error(f"Error marking reminder {reminder_id} as sent: {e}")
