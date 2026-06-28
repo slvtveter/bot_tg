@@ -205,8 +205,17 @@ def main():
     # of failing silently, so the user always gets some response.
     app.add_error_handler(error_handler)
 
-    # Background job: check and fire due reminders every 60 seconds.
-    app.job_queue.run_repeating(check_reminders, interval=60, first=10)
+    # Background job: check and fire due reminders every 60 seconds. JobQueue
+    # needs the [job-queue] extra (APScheduler); guard against it being missing
+    # so a packaging slip disables only reminders instead of crashing the whole
+    # bot at startup (which is exactly what took an earlier deploy down).
+    if app.job_queue is not None:
+        app.job_queue.run_repeating(check_reminders, interval=60, first=10)
+    else:
+        logger.error(
+            "JobQueue unavailable — install python-telegram-bot[job-queue]. "
+            "Reminders are disabled for this run."
+        )
 
     if config.WEBHOOK_URL:
         # Webhook mode: Telegram pushes updates to us over HTTPS. Used on
