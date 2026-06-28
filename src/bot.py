@@ -234,10 +234,17 @@ def main():
             # user gets replayed on startup, making the bot appear to switch
             # modes "by itself" and spam every user with "mode changed".
             drop_pending_updates=True,
+            # Retry the initial Telegram bootstrap instead of aborting on the
+            # first error. On free-tier cold starts the container's outbound
+            # network isn't routable for the first ~1-2s, so the bootstrap
+            # connection fails with an empty ConnectError and (with the default
+            # of 0 retries) the whole process exits → the deploy is marked
+            # failed. A few retries with backoff ride out that startup gap.
+            bootstrap_retries=10,
         )
     else:
         logger.info("Starting Telegram Bot in polling mode...")
-        app.run_polling(drop_pending_updates=True)
+        app.run_polling(drop_pending_updates=True, bootstrap_retries=10)
 
 
 if __name__ == "__main__":
