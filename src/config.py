@@ -82,6 +82,27 @@ TURSO_DATABASE_URL = os.getenv("TURSO_DATABASE_URL", "").strip()
 TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "").strip()
 USE_TURSO = bool(TURSO_DATABASE_URL)
 
+# Intent router (src/router.py): an embedding model decides which specialist
+# agent answers each message (orchestrator → sub-agents). ROUTER_BACKEND picks
+# where embeddings are computed: "local" = a small static model (model2vec) on
+# our own CPU, no network; "gemini" = hosted multilingual embeddings via the
+# Google API. ROUTER_MODEL_PATH is where the local model is loaded from (baked
+# into the Docker image at build time). ROUTER_THRESHOLD is the minimum cosine a
+# specialist must reach or the message falls back to "general". If the router
+# can't initialise it disables itself fail-open (everything → general), so the
+# bot still works without the model present (e.g. in CI).
+# Default backend is "gemini" (hosted multilingual embeddings): the bot is
+# Russian-first, and a feasible-size local static model can't handle Russian well
+# (the small ones are English-only; the multilingual one is 512MB = the whole
+# free-tier RAM). The "local" model2vec backend stays available for environments
+# that can host a good small model — set ROUTER_BACKEND=local and bake a model
+# into ROUTER_MODEL_PATH. ROUTER_THRESHOLD likely needs tuning per backend from
+# the per-decision scores the router logs.
+ROUTER_ENABLED = os.getenv("ROUTER_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+ROUTER_BACKEND = os.getenv("ROUTER_BACKEND", "gemini").strip().lower()
+ROUTER_MODEL_PATH = os.getenv("ROUTER_MODEL_PATH", "models/router").strip()
+ROUTER_THRESHOLD = float(os.getenv("ROUTER_THRESHOLD", "0.55"))
+
 # Privacy: chat content is stored in the messages table under a PSEUDONYMOUS
 # identifier (a salted hash of the Telegram user id) instead of the raw user id,
 # so messages can't be casually attributed to a real person by reading the DB.
