@@ -36,3 +36,6 @@ bot.db-shm
 
 # Scratch test artifacts
 tests_tmp/
+
+# Router embedding model (baked into Docker image, or downloaded locally)
+models/
