@@ -124,34 +124,51 @@ class GeminiEmbeddingBackend:
     (e.g. when a local model can't fit or doesn't understand the language well)."""
 
     name = "gemini"
-    _MODEL = "text-embedding-004"
-    _URL = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{_MODEL}:batchEmbedContents"
-    )
+    # Tried in order until one returns 200; the winner is cached for the process.
+    # text-embedding-004 returned 404 in production (the model id/method wasn't
+    # valid for this key's API surface), so probe the current GA model first and
+    # fall back. The resolved model is logged.
+    _CANDIDATES = ["gemini-embedding-001", "text-embedding-004", "embedding-001"]
+    _BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
     def __init__(self) -> None:
         if not config.GOOGLE_API_KEYS:
             raise RuntimeError("GeminiEmbeddingBackend needs GOOGLE_API_KEYS")
+        self._model: Optional[str] = None  # resolved on first successful embed
 
     async def embed(self, texts: List[str]) -> np.ndarray:
         import httpx
 
         key = config.GOOGLE_API_KEYS[0]
-        payload = {
-            "requests": [
-                {
-                    "model": f"models/{self._MODEL}",
-                    "content": {"parts": [{"text": t}]},
-                }
-                for t in texts
-            ]
-        }
+        candidates = [self._model] if self._model else self._CANDIDATES
+        last_error = "no candidates tried"
         async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
-            resp = await client.post(f"{self._URL}?key={key}", json=payload)
-        resp.raise_for_status()
-        embs = resp.json().get("embeddings", [])
-        return np.asarray([e["values"] for e in embs], dtype=np.float32)
+            for model in candidates:
+                payload = {
+                    "requests": [
+                        {"model": f"models/{model}", "content": {"parts": [{"text": t}]}}
+                        for t in texts
+                    ]
+                }
+                try:
+                    resp = await client.post(
+                        f"{self._BASE}/{model}:batchEmbedContents?key={key}",
+                        json=payload,
+                    )
+                    if resp.status_code == 404:
+                        last_error = f"404 for model {model}"
+                        continue
+                    resp.raise_for_status()
+                    embs = resp.json().get("embeddings", [])
+                    vecs = np.asarray([e["values"] for e in embs], dtype=np.float32)
+                    if self._model is None:
+                        self._model = model
+                        logger.info("Gemini embedding model resolved to %s", model)
+                    return vecs
+                except Exception as e:
+                    last_error = f"{model}: {e}"
+                    continue
+        raise RuntimeError(f"no working Gemini embedding model ({last_error})")
 
 
 def _normalize(v: np.ndarray) -> np.ndarray:

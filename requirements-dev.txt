@@ -1,0 +1,8 @@
+# Dev-only tooling — NOT installed in the bot's Docker image (the bot's runtime
+# deps live in requirements.txt). Install locally with:
+#   pip install -r requirements-dev.txt
+#
+# Powers the project-local Turso MCP server (mcp_server/turso_mcp.py), registered
+# in .mcp.json, which gives Claude Code a read-only window into the production
+# database for debugging. libsql-client and python-dotenv come from requirements.txt.
+mcp>=1.2.0
