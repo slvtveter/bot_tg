@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "turso-nela": {
+      "command": "python",
+      "args": ["-m", "mcp_server.turso_mcp"],
+      "description": "Read-only window into the Nela AI Turso DB (conversations, stats, nutrition). Reads TURSO_DATABASE_URL / TURSO_AUTH_TOKEN / PRIVACY_SALT from .env."
+    }
+  }
+}
