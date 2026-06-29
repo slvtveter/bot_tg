@@ -18,6 +18,12 @@ from src import database
 from src import llm
 from src import config
 
+# Tests must always run against the local SQLite test DB, never the remote Turso
+# backend. config.load_dotenv() pulls a real TURSO_DATABASE_URL from a developer's
+# .env, which would otherwise make every DB test hit production. database reads
+# config.USE_TURSO at call time, so forcing it off here is enough.
+config.USE_TURSO = False
+
 
 class TestFormatting(unittest.TestCase):
     def test_html_escaping(self):
@@ -311,6 +317,10 @@ class TestConfig(unittest.TestCase):
                 
         # Reload one final time with original environment to keep config in clean state
         importlib.reload(config)
+        # The reload recomputes USE_TURSO from the (real) environment, which would
+        # re-enable the Turso backend for every later test if a dev .env has a
+        # TURSO_DATABASE_URL. Force it back off so DB tests stay on local SQLite.
+        config.USE_TURSO = False
 
 
 class TestUtilsAdditional(unittest.TestCase):

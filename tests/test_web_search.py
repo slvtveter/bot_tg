@@ -11,6 +11,10 @@ from src import llm
 from src import web_search
 from src.agents.generic_agent import GenericAgent
 
+# Never let a developer's real TURSO_DATABASE_URL (.env) route DB tests at the
+# remote production backend — always use the local SQLite test DB.
+config.USE_TURSO = False
+
 
 def _gemini_text_response(text):
     r = MagicMock(spec=httpx.Response)
