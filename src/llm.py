@@ -246,9 +246,10 @@ def estimate_history_tokens(history: List[Dict[str, str]], system_prompt: str) -
 
 # Conversation memory budget. The bot keeps the most recent messages that fit in
 # this many estimated tokens, so it has real short-term context without sending
-# a huge (expensive, slow) prompt - important on shared free-tier quotas. ~1500
-# tokens is roughly the last 8-12 turns of normal chat.
-HISTORY_TOKEN_BUDGET = 1500
+# a huge (expensive, slow) prompt - important on shared free-tier quotas. ~5000
+# tokens comfortably holds the last ~15-20 turns even after long answers (KБЖУ
+# tables, code), so short follow-ups like "а если у меня 91" keep their context.
+HISTORY_TOKEN_BUDGET = 5000
 
 
 def trim_history(

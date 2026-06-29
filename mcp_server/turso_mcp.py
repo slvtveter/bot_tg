@@ -33,8 +33,8 @@ from mcp.server.fastmcp import FastMCP
 
 load_dotenv()
 
-TURSO_URL = os.getenv("TURSO_DATABASE_URL", "").strip()
-TURSO_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "").strip()
+TURSO_URL = os.getenv("TURSO_DATABASE_URL", "libsql://bottg-slvtveter.aws-us-east-2.turso.io").strip()
+TURSO_TOKEN = os.getenv("TURSO_AUTH_TOKEN", ).strip()
 PRIVACY_SALT = os.getenv("PRIVACY_SALT", "nela-ai-default-privacy-salt-v1")
 
 mcp = FastMCP("turso-nela")

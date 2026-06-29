@@ -320,6 +320,20 @@ async def _init_schema_turso() -> None:
     async with get_db_connection() as db:
         for statement in statements:
             await db.execute(statement)
+        # CREATE TABLE IF NOT EXISTS does NOT add columns to a table that already
+        # exists from an older schema, and the remote backend has no PRAGMA-based
+        # migration path like init_db. So backfill any columns a legacy Turso DB is
+        # missing. Critical: without context_reset_id, get_chat_history's lookup
+        # throws and returns [] for EVERY call, so the bot loses all chat memory.
+        async with db.execute("PRAGMA table_info(users)") as cursor:
+            existing = {row[1] for row in await cursor.fetchall()}
+        for col, ddl in (
+            ("context_reset_id", "INTEGER DEFAULT 0"),
+            ("message_count", "INTEGER DEFAULT 0"),
+        ):
+            if col not in existing:
+                logger.info("Turso: backfilling users.%s column", col)
+                await db.execute(f"ALTER TABLE users ADD COLUMN {col} {ddl}")
         # Migrate any pre-existing remote DB (created before pseudonymization)
         # to the conv_id schema + message_count column, then create its index.
         await _migrate_messages_pseudonymous(db)
@@ -957,12 +971,20 @@ async def get_chat_history(
     """
     try:
         async with get_db_connection(db_path) as db:
-            async with db.execute(
-                "SELECT COALESCE(context_reset_id, 0) FROM users WHERE user_id = ?",
-                (user_id,),
-            ) as cursor:
-                row = await cursor.fetchone()
-            reset_id = row[0] if row else 0
+            # The context_reset_id lookup is best-effort: on a legacy schema where
+            # the column is missing this query throws, but losing the reset filter
+            # must NOT cost us the whole history (that silently wiped all chat
+            # memory in production). Fall back to reset_id=0 and still return turns.
+            reset_id = 0
+            try:
+                async with db.execute(
+                    "SELECT COALESCE(context_reset_id, 0) FROM users WHERE user_id = ?",
+                    (user_id,),
+                ) as cursor:
+                    row = await cursor.fetchone()
+                reset_id = row[0] if row else 0
+            except Exception as e:
+                logger.warning("context_reset_id lookup failed (%s); using 0", e)
             async with db.execute(
                 """
                 SELECT role, content FROM (
