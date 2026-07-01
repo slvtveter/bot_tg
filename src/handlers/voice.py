@@ -62,7 +62,7 @@ async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         audio_base64 = base64.b64encode(voice_bytes).decode("utf-8")
 
         transcript, _, _, _, _ = await ask_llm(
-            mode="general",
+            mode="transcribe",
             history=[],
             audio_base64=audio_base64,
             audio_mime_type="audio/ogg",

@@ -115,6 +115,17 @@ async def post_init(application) -> None:
             "ID (use /id to find it) to enable them."
         )
 
+    # Warm up the intent router in the background: pre-embed the domain example
+    # phrases now so the first user message doesn't pay that one-off cost (an
+    # extra embedding batch) on top of its own reply latency. Fire-and-forget —
+    # the router is fail-open, so a warm-up error just disables routing.
+    from src.handlers.messages import orchestrator
+
+    if orchestrator.router is not None and orchestrator.router.enabled:
+        task = asyncio.create_task(orchestrator.router.warmup())
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
+
     # Keep-alive ping to prevent free-tier sleep (webhook mode only).
     if config.WEBHOOK_URL and config.KEEPALIVE_MINUTES > 0:
         interval = config.KEEPALIVE_MINUTES * 60

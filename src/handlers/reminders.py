@@ -2,6 +2,7 @@ import logging
 from datetime import datetime, timedelta
 
 from telegram import Update
+from telegram.error import Forbidden
 from telegram.ext import ContextTypes
 
 from src.database import add_reminder, get_pending_reminders, mark_reminder_sent, get_user_language
@@ -57,6 +58,14 @@ async def check_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
             await context.bot.send_message(
                 chat_id=reminder["user_id"],
                 text=t("remind_fired", lang, text=reminder["text"]),
+            )
+            await mark_reminder_sent(reminder["id"])
+        except Forbidden:
+            # The user blocked the bot — this send will never succeed, so mark
+            # the reminder sent instead of retrying it forever every 60s.
+            logger.info(
+                f"Reminder {reminder['id']}: user {reminder['user_id']} blocked "
+                "the bot; marking as sent."
             )
             await mark_reminder_sent(reminder["id"])
         except Exception as e:

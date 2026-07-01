@@ -1,3 +1,4 @@
+import asyncio
 import re
 
 from telegram import Bot, Update
@@ -62,9 +63,16 @@ async def process_text_message(
     routes it through the Orchestrator for the user's current mode, logs the
     reply and usage stats, and sends the response back to Telegram.
     """
-    # 1. Fetch mode + settings (length/creativity/language) in ONE query to cut
-    # per-message round-trips to the remote DB.
-    ctx = await get_user_context(user_id=user_id)
+    # 1. Fetch user context (mode + settings in ONE query) and recent history
+    # concurrently — they're independent reads, and on the remote Turso backend
+    # each one is an HTTP round trip, so running them in parallel halves that
+    # part of the per-message latency. History is fetched BEFORE the new message
+    # is logged, so the model gets the prior turns as context and the current
+    # message isn't duplicated (the agent appends it once).
+    ctx, history = await asyncio.gather(
+        get_user_context(user_id=user_id),
+        get_chat_history(user_id=user_id, limit=20),
+    )
     mode = ctx["mode"]
     settings = {
         "max_length": ctx["max_length"],
@@ -72,47 +80,47 @@ async def process_text_message(
         "language": ctx["language"],
     }
 
-    # 2. Retrieve recent history BEFORE logging the new message, so the model
-    # gets the prior turns as context and the current message isn't duplicated
-    # (the agent appends it once). The history is token-trimmed inside ask_llm.
-    history = await get_chat_history(user_id=user_id, limit=20)
-
-    # 3. Log the user's message now that prior history has been captured
-    await log_message(user_id=user_id, role="user", content=text)
-
-    # 4. Query Orchestrator (returns the answer plus real LLM telemetry). For
-    # general mode this runs the web_search tool path: the model itself decides
-    # whether to search, runs Tavily if so, and the source footer is already on
-    # the returned text.
-    response_text, model_name, prompt_tokens, completion_tokens, latency = (
-        await orchestrator.route_and_process(
-            mode=mode,
-            user_input=text,
-            history=history,
-            user_settings=settings,
-            user_id=user_id,
+    # 2. Query the Orchestrator (returns the answer plus real LLM telemetry),
+    # logging the user's message concurrently — the history snapshot above is
+    # already taken, so the write doesn't need to finish first, and this hides
+    # one more DB round trip behind the (much slower) LLM call. For general
+    # mode this runs the web_search tool path: the model itself decides whether
+    # to search, runs Tavily if so, and the source footer is already on the
+    # returned text.
+    (response_text, model_name, prompt_tokens, completion_tokens, latency), _ = (
+        await asyncio.gather(
+            orchestrator.route_and_process(
+                mode=mode,
+                user_input=text,
+                history=history,
+                user_settings=settings,
+                user_id=user_id,
+            ),
+            log_message(user_id=user_id, role="user", content=text),
         )
     )
 
     if response_text:
-        # 5. Save bot's reply
-        await log_message(user_id=user_id, role="assistant", content=response_text)
-
-        # 6. Save stats to DB
-        await log_usage_stats(
-            user_id=user_id,
-            model=model_name or "unknown",
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            latency=latency,
-        )
-
-        # 7. Send reply using Rich Message API (with fallback)
+        # 3. Send the reply to the user FIRST (rich message with fallbacks) —
+        # the two bookkeeping writes below used to run before this, adding two
+        # remote-DB round trips to the user's perceived response time.
         await send_response(
             bot=bot,
             chat_id=chat_id,
             text=response_text,
             reply_to_message_id=reply_to_message_id,
+        )
+
+        # 4. Save the bot's reply and the usage stats (independent writes).
+        await asyncio.gather(
+            log_message(user_id=user_id, role="assistant", content=response_text),
+            log_usage_stats(
+                user_id=user_id,
+                model=model_name or "unknown",
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                latency=latency,
+            ),
         )
     else:
         # All models failed

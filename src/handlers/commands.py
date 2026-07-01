@@ -11,7 +11,7 @@ from telegram.ext import ContextTypes
 from src import config
 from src.database import (
     add_feedback,
-    reset_chat_context,
+    clear_chat_history,
     get_usage_stats,
     get_user_activity_summary,
     get_user_language,
@@ -81,12 +81,14 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Clears the chat history for the user and confirms."""
+    """Deletes the user's chat history and confirms. /privacy promises that
+    /clear WIPES the history, so this is a hard DELETE of the message rows —
+    unlike the "New chat" button in Settings, which only resets the context."""
     user = update.effective_user
     if not user or not update.message:
         return
 
-    await reset_chat_context(user.id)
+    await clear_chat_history(user.id)
     lang = await get_user_language(user.id)
     await update.message.reply_html(t("clear_done", lang))
 
