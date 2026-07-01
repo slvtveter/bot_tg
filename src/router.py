@@ -139,35 +139,41 @@ class GeminiEmbeddingBackend:
     async def embed(self, texts: List[str]) -> np.ndarray:
         import httpx
 
+        # Reuse the process-wide pooled HTTP client (src.llm) instead of
+        # creating one per call: the router runs on EVERY message, and a fresh
+        # client meant a fresh TLS handshake each time on top of the API call.
+        from src.llm import _get_http_client
+
         key = config.GOOGLE_API_KEYS[0]
         candidates = [self._model] if self._model else self._CANDIDATES
         last_error = "no candidates tried"
-        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
-            for model in candidates:
-                payload = {
-                    "requests": [
-                        {"model": f"models/{model}", "content": {"parts": [{"text": t}]}}
-                        for t in texts
-                    ]
-                }
-                try:
-                    resp = await client.post(
-                        f"{self._BASE}/{model}:batchEmbedContents?key={key}",
-                        json=payload,
-                    )
-                    if resp.status_code == 404:
-                        last_error = f"404 for model {model}"
-                        continue
-                    resp.raise_for_status()
-                    embs = resp.json().get("embeddings", [])
-                    vecs = np.asarray([e["values"] for e in embs], dtype=np.float32)
-                    if self._model is None:
-                        self._model = model
-                        logger.info("Gemini embedding model resolved to %s", model)
-                    return vecs
-                except Exception as e:
-                    last_error = f"{model}: {e}"
+        client = _get_http_client()
+        for model in candidates:
+            payload = {
+                "requests": [
+                    {"model": f"models/{model}", "content": {"parts": [{"text": t}]}}
+                    for t in texts
+                ]
+            }
+            try:
+                resp = await client.post(
+                    f"{self._BASE}/{model}:batchEmbedContents?key={key}",
+                    json=payload,
+                    timeout=httpx.Timeout(10.0, connect=5.0),
+                )
+                if resp.status_code == 404:
+                    last_error = f"404 for model {model}"
                     continue
+                resp.raise_for_status()
+                embs = resp.json().get("embeddings", [])
+                vecs = np.asarray([e["values"] for e in embs], dtype=np.float32)
+                if self._model is None:
+                    self._model = model
+                    logger.info("Gemini embedding model resolved to %s", model)
+                return vecs
+            except Exception as e:
+                last_error = f"{model}: {e}"
+                continue
         raise RuntimeError(f"no working Gemini embedding model ({last_error})")
 
 
@@ -225,6 +231,12 @@ class Router:
             except Exception as e:
                 logger.warning("Router disabled (warm-up failed): %s", e)
                 self.enabled = False
+
+    async def warmup(self) -> None:
+        """Pre-computes the domain example matrices (one embedding batch). Called
+        in the background at startup so the FIRST user message doesn't pay the
+        warm-up cost on top of its own routing call. Safe to call anytime."""
+        await self._ensure_ready()
 
     async def route(self, text: str) -> RouteResult:
         """Return the chosen domain. Always returns a valid result; on anything

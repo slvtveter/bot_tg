@@ -49,6 +49,15 @@ class TestLLMRouter(unittest.IsolatedAsyncioTestCase):
         # Expected = 6/2 + 12/4 = 3 + 3 = 6
         self.assertEqual(llm.estimate_history_tokens(history, system_prompt), 6)
 
+    def test_transcribe_prompt_is_minimal(self):
+        # The voice handler's transcription call must NOT get the persona,
+        # formatting philosophy or the "reply only in Russian/English" suffix —
+        # the transcript has to stay in whatever language was spoken.
+        prompt = llm._compose_system_prompt("transcribe", "ru", "short")
+        self.assertEqual(prompt, llm.SYSTEM_PROMPTS["transcribe"])
+        self.assertNotIn("ОФОРМЛЕНИЕ", prompt)
+        self.assertNotIn("только на русском", prompt)
+
     @patch("httpx.AsyncClient.post")
     async def test_gemini_direct_success(self, mock_post):
         # Mock Gemini response

@@ -218,12 +218,27 @@ def _make_turso_client():
 
     url = config.TURSO_DATABASE_URL
     # libsql:// selects the websocket protocol; https:// uses stateless HTTP,
-    # which fits our open-a-connection-per-operation pattern better.
+    # which lets one long-lived client serve every query safely.
     if url.startswith("libsql://"):
         url = "https://" + url[len("libsql://"):]
     return libsql_client.create_client(
         url, auth_token=config.TURSO_AUTH_TOKEN or None
     )
+
+
+# One shared libSQL client for the process. Creating a client per query (the
+# old pattern) meant a fresh TLS handshake for every single DB operation — and
+# the text hot path makes ~5-6 of them per message, so that alone added
+# hundreds of ms per reply on the remote backend. The stateless-HTTP client is
+# safe for concurrent use; it's created lazily and recreated if closed.
+_turso_client = None
+
+
+def _get_turso_client():
+    global _turso_client
+    if _turso_client is None or _turso_client.closed:
+        _turso_client = _make_turso_client()
+    return _turso_client
 
 
 @asynccontextmanager
@@ -236,11 +251,9 @@ async def get_db_connection(db_path: str = DB_PATH):
     timeout and foreign keys enforced.
     """
     if config.USE_TURSO:
-        conn = _TursoConnection(_make_turso_client())
-        try:
-            yield conn
-        finally:
-            await conn.close()
+        # The shared client is deliberately NOT closed here — it lives for the
+        # whole process (see _get_turso_client above).
+        yield _TursoConnection(_get_turso_client())
         return
 
     conn = await aiosqlite.connect(db_path, timeout=10.0)
@@ -1003,33 +1016,6 @@ async def get_chat_history(
         return []
 
 
-async def get_all_chat_history(
-    user_id: int, db_path: str = DB_PATH
-) -> List[Dict[str, str]]:
-    """
-    Retrieves the entire message history for a user (chronological), with
-    timestamps, for export purposes (no row limit, unlike get_chat_history).
-    """
-    try:
-        async with get_db_connection(db_path) as db:
-            async with db.execute(
-                """
-                SELECT role, content, timestamp FROM messages
-                WHERE conv_id = ?
-                ORDER BY id ASC
-            """,
-                (_conv_id(user_id),),
-            ) as cursor:
-                rows = await cursor.fetchall()
-                return [
-                    {"role": row[0], "content": row[1], "timestamp": row[2]}
-                    for row in rows
-                ]
-    except Exception as e:
-        logger.error(f"Error getting full chat history for user {user_id}: {e}")
-        return []
-
-
 async def log_nutrition_entry(
     user_id: int,
     calories: float,
@@ -1133,34 +1119,6 @@ async def get_all_user_ids(db_path: str = DB_PATH) -> List[int]:
     except Exception as e:
         logger.error(f"Error retrieving all user ids: {e}")
         return []
-
-
-async def delete_last_exchange(user_id: int, db_path: str = DB_PATH) -> bool:
-    """
-    Deletes the most recent user message and the most recent assistant message
-    that follows it (i.e. the last user/assistant exchange), so the user can
-    undo their last interaction. Returns True if anything was deleted.
-    """
-    try:
-        async with get_db_connection(db_path) as db:
-            async with db.execute(
-                "SELECT id FROM messages WHERE conv_id = ? ORDER BY id DESC LIMIT 2",
-                (_conv_id(user_id),),
-            ) as cursor:
-                rows = await cursor.fetchall()
-            if not rows:
-                return False
-            ids = [row[0] for row in rows]
-            await db.execute(
-                f"DELETE FROM messages WHERE id IN ({','.join('?' * len(ids))})",
-                ids,
-            )
-            await db.commit()
-            logger.info(f"Deleted last exchange ({len(ids)} message(s)) for user {user_id}.")
-            return True
-    except Exception as e:
-        logger.error(f"Error deleting last exchange for user {user_id}: {e}")
-        raise
 
 
 async def get_week_nutrition_totals(user_id: int, db_path: str = DB_PATH) -> Dict[str, Any]:

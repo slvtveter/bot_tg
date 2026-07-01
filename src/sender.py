@@ -17,6 +17,17 @@ from src.utils import normalize_markdown_tables, to_telegram_html
 
 logger = logging.getLogger(__name__)
 
+# One shared httpx client for sendRichMessage calls, reused across messages so
+# we don't pay TLS/connection setup on every reply (same pattern as src.llm).
+_http_client: httpx.AsyncClient | None = None
+
+
+def _get_http_client() -> httpx.AsyncClient:
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.AsyncClient(timeout=30.0)
+    return _http_client
+
 
 async def send_response(
     bot: Bot,
@@ -45,11 +56,12 @@ async def send_response(
     # Pre-process and normalize any markdown tables in the response text
     text = normalize_markdown_tables(text)
 
-    # --- 1. (Opt-in) sendRichMessage: native Markdown/LaTeX/tables ---
-    # OFF by default. It renders beautifully on up-to-date Telegram, but on
-    # OLDER clients the API call SUCCEEDS while the message displays blank - the
-    # user sees nothing and the bot can't detect the failure to fall back. Enable
-    # only via USE_RICH_MESSAGE when the whole audience is on current Telegram.
+    # --- 1. (Default) sendRichMessage: native Markdown/LaTeX/tables ---
+    # ON by default (config.USE_RICH_MESSAGE). It renders beautifully on
+    # up-to-date Telegram, but on OLDER clients the API call SUCCEEDS while the
+    # message displays blank — the user sees nothing and the bot can't detect
+    # the failure to fall back. Set USE_RICH_MESSAGE=false if old-client users
+    # report missing messages.
     if config.USE_RICH_MESSAGE:
         try:
             result = await _send_rich_message(
@@ -61,7 +73,7 @@ async def send_response(
         except Exception as e:
             logger.warning(f"sendRichMessage failed: {e}")
 
-    # --- 2. Default: sendMessage with HTML formatting ---
+    # --- 2. Fallback: sendMessage with HTML formatting ---
     # HTML parse_mode is rendered by EVERY Telegram client, old and new, so this
     # is the reliable default: it keeps bold/italic/code/links and shows tables
     # and formulas as monospace blocks (readable everywhere). If the converter
@@ -148,8 +160,7 @@ async def _send_rich_message(
 
             payload["reply_markup"] = json.loads(reply_markup.to_json())
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(url, json=payload)
+    response = await _get_http_client().post(url, json=payload)
 
     if response.status_code == 200:
         data = response.json()

@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import html
 import logging
@@ -151,37 +152,44 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         # Always strip/parse the marker: the model appends it only when it
         # actually analysed a meal (works in the smart general mode now), so a
         # non-food photo simply yields no totals and nothing is logged.
+        totals = None
         if response_text:
             response_text, totals = extract_nutrition_totals(response_text)
-            if totals:
-                await log_nutrition_entry(
-                    user_id=user_id,
-                    calories=totals["calories"],
-                    protein=totals["protein"],
-                    fat=totals["fat"],
-                    carbs=totals["carbs"],
-                )
 
         if response_text:
-            # 5. Log assistant message
-            await log_message(user_id=user_id, role="assistant", content=response_text)
-
-            # 6. Log usage stats
-            await log_usage_stats(
-                user_id=user_id,
-                model=model_name or "unknown",
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                latency=latency,
-            )
-
-            # 7. Send reply using Rich Message API (with fallback)
+            # 5. Send the reply to the user FIRST (rich message with fallback) —
+            # the bookkeeping writes below shouldn't add remote-DB round trips
+            # to the user's perceived response time.
             await send_response(
                 bot=context.bot,
                 chat_id=update.effective_chat.id,
                 text=response_text,
                 reply_to_message_id=update.message.message_id,
             )
+
+            # 6. Log the diary entry (if a meal was analysed), the assistant
+            # message and the usage stats — independent writes, in parallel.
+            writes = [
+                log_message(user_id=user_id, role="assistant", content=response_text),
+                log_usage_stats(
+                    user_id=user_id,
+                    model=model_name or "unknown",
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    latency=latency,
+                ),
+            ]
+            if totals:
+                writes.append(
+                    log_nutrition_entry(
+                        user_id=user_id,
+                        calories=totals["calories"],
+                        protein=totals["protein"],
+                        fat=totals["fat"],
+                        carbs=totals["carbs"],
+                    )
+                )
+            await asyncio.gather(*writes)
         else:
             await update.message.reply_text(t("photo_failed", lang))
 

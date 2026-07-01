@@ -122,6 +122,16 @@ SYSTEM_PROMPTS = {
         "переусложняй: простую задачу решай просто."
     )
     + _FORMATTING_PHILOSOPHY,
+    # Internal mode used by the voice handler to turn speech into text. Kept
+    # deliberately tiny: no persona, no formatting rules, no language directive
+    # (the transcript must stay in whatever language was spoken) — the general
+    # persona used to be sent here, wasting tokens and contradicting the
+    # "transcribe verbatim" instruction with "reply only in Russian".
+    "transcribe": (
+        "Ты — точный транскрибатор голосовых сообщений. Выведи ТОЛЬКО дословный "
+        "текст сказанного, на том языке, на котором говорили. Без комментариев, "
+        "кавычек, перевода и пояснений."
+    ),
 }
 
 
@@ -156,6 +166,35 @@ class KeyPool:
 
 
 key_pool = KeyPool()
+
+
+def _classify_key_failure(
+    status_code: int, body: str, model: str
+) -> Optional[Tuple[int, Optional[str]]]:
+    """
+    Maps a failed direct-Gemini HTTP response to a (cooldown_seconds, scope)
+    pair for KeyPool.fail_key, or None when the failure shouldn't cool the key.
+    Shared by ask_llm and answer_with_web_tool so BOTH paths learn about dead
+    (key, model) pairs — before this, the web-tool path (which serves nearly
+    every general-mode message) kept re-trying quota-exhausted keys on every
+    single request.
+    """
+    if status_code == 400 and "API key not valid" in body:
+        # The key itself is bad for every model - back off long and
+        # globally (model=None).
+        return 600, None
+    if status_code == 429 and "perday" in body.lower():
+        # Daily quota exhausted on THIS model only - retrying within the same
+        # day is pointless, so back off long, but scoped to this model so the
+        # key keeps serving other models normally.
+        return 21600, model
+    if status_code == 429:
+        # Ordinary per-minute rate limit, clears fast.
+        return 60, model
+    if status_code in (403, 500, 503):
+        return 300, model
+    return None
+
 
 # Runtime kill switch: model ids placed here are skipped by both the direct
 # Gemini and OpenRouter fallback loops below, without needing a redeploy.
@@ -342,6 +381,10 @@ def _compose_system_prompt(mode: str, language: str, max_length: str) -> str:
     identically on language and verbosity."""
     from datetime import date
     system_prompt = SYSTEM_PROMPTS.get(mode, SYSTEM_PROMPTS["general"])
+    if mode == "transcribe":
+        # Transcription must not get the language/length suffixes: "reply only
+        # in Russian" would make the model translate an English voice note.
+        return system_prompt
     system_prompt += f"\nСегодня {date.today().strftime('%d.%m.%Y')}."
     if language == "en":
         system_prompt += "\nIMPORTANT: You MUST reply in English language only."
@@ -487,14 +530,6 @@ async def answer_with_web_tool(
     if not contents:
         return (None, None, 0, 0, 0.0, [])
 
-    base_payload: Dict[str, Any] = {
-        "contents": contents,
-        "systemInstruction": {"parts": [{"text": system_prompt}]},
-        "generationConfig": {"maxOutputTokens": max_tokens, "temperature": temperature},
-    }
-    if attach_tool:
-        base_payload["tools"] = [_WEB_SEARCH_TOOL]
-
     start_time = time.time()
     async with _LLM_SEMAPHORE:
         for model in _TOOL_MODELS:
@@ -507,6 +542,22 @@ async def answer_with_web_tool(
                 "https://generativelanguage.googleapis.com"
                 f"/v1beta/models/{model}:generateContent?key={{key}}"
             )
+            generation_config: Dict[str, Any] = {
+                "maxOutputTokens": max_tokens,
+                "temperature": temperature,
+            }
+            # general is a fast conversational mode: turn off "thinking" on
+            # models that support it, exactly like ask_llm does — it was the
+            # single biggest latency cost (5-11s) before being disabled there.
+            if model in THINKING_CONTROL_MODELS:
+                generation_config["thinkingConfig"] = {"thinkingBudget": 0}
+            base_payload: Dict[str, Any] = {
+                "contents": contents,
+                "systemInstruction": {"parts": [{"text": system_prompt}]},
+                "generationConfig": generation_config,
+            }
+            if attach_tool:
+                base_payload["tools"] = [_WEB_SEARCH_TOOL]
             for key in keys:
                 try:
                     url = url_tmpl.format(key=key)
@@ -515,19 +566,34 @@ async def answer_with_web_tool(
                             url, json=base_payload, timeout=_FAST_TIMEOUT
                         )
                     if resp.status_code != 200:
+                        failure = _classify_key_failure(
+                            resp.status_code, resp.text, model
+                        )
+                        if failure:
+                            cooldown, cooldown_model = failure
+                            logger.warning(
+                                f"answer_with_web_tool ({model}) status {resp.status_code}: "
+                                f"cooling key {key[:8]} for {cooldown}s (model={cooldown_model})"
+                            )
+                            key_pool.fail_key(key, cooldown, model=cooldown_model)
                         continue
                     data = resp.json()
                     candidates = data.get("candidates", [])
                     if not candidates:
                         continue
                     candidate = candidates[0]
+                    finish_reason = candidate.get("finishReason")
+                    if finish_reason and finish_reason not in ("STOP", "MAX_TOKENS"):
+                        # Safety block or other abnormal stop — same treatment
+                        # as ask_llm: fall through to the next key/model.
+                        continue
                     p_tok, c_tok = _gemini_usage(data)
 
                     query = _gemini_function_call(candidate)
                     if not query:
                         # Model answered directly — no search needed. 1 call.
                         text = _gemini_text(candidate)
-                        if not text:
+                        if not text or not is_response_complete(text):
                             continue
                         return (
                             text, model, p_tok, c_tok,
@@ -558,7 +624,7 @@ async def answer_with_web_tool(
                             },
                         ],
                         "systemInstruction": base_payload["systemInstruction"],
-                        "generationConfig": base_payload["generationConfig"],
+                        "generationConfig": generation_config,
                         "tools": [_WEB_SEARCH_TOOL],
                     }
                     async with _shared_http() as client:
@@ -566,6 +632,12 @@ async def answer_with_web_tool(
                             url, json=followup, timeout=_FAST_TIMEOUT
                         )
                     if resp2.status_code != 200:
+                        failure = _classify_key_failure(
+                            resp2.status_code, resp2.text, model
+                        )
+                        if failure:
+                            cooldown, cooldown_model = failure
+                            key_pool.fail_key(key, cooldown, model=cooldown_model)
                         continue
                     data2 = resp2.json()
                     cands2 = data2.get("candidates", [])
@@ -580,7 +652,11 @@ async def answer_with_web_tool(
                         time.time() - start_time, sources,
                     )
                 except Exception as e:
+                    # Same policy as ask_llm: a timeout/network error cools the
+                    # key globally for a short while instead of being re-hit on
+                    # the very next message.
                     logger.warning(f"answer_with_web_tool failed on {model}/{key[:8]}: {e}")
+                    key_pool.fail_key(key)
                     continue
 
     return (None, None, 0, 0, time.time() - start_time, [])
@@ -592,7 +668,6 @@ async def ask_llm(
     image_base64: Optional[str] = None,
     vision_prompt: Optional[str] = None,
     user_settings: Optional[Dict[str, str]] = None,
-    is_summarizing: bool = False,
     audio_base64: Optional[str] = None,
     audio_mime_type: str = "audio/ogg",
 ) -> Tuple[Optional[str], Optional[str], int, int, float]:
@@ -608,7 +683,6 @@ async def ask_llm(
             image_base64=image_base64,
             vision_prompt=vision_prompt,
             user_settings=user_settings,
-            is_summarizing=is_summarizing,
             audio_base64=audio_base64,
             audio_mime_type=audio_mime_type,
         )
@@ -620,14 +694,13 @@ async def _ask_llm_uncapped(
     image_base64: Optional[str] = None,
     vision_prompt: Optional[str] = None,
     user_settings: Optional[Dict[str, str]] = None,
-    is_summarizing: bool = False,
     audio_base64: Optional[str] = None,
     audio_mime_type: str = "audio/ogg",
 ) -> Tuple[Optional[str], Optional[str], int, int, float]:
     """
-    Queries Gemini API directly with key rotation, falling back to OpenRouter.
-    Applies user settings for creativity, response length, and language.
-    Features automatic chat memory summarization when prompt tokens exceed 6000.
+    Queries Gemini API directly with key rotation, falling back to Groq and
+    then OpenRouter. Applies user settings for creativity, response length,
+    and language. History is trimmed locally to a token budget (no LLM call).
     Returns: (response_text, model_name, prompt_tokens, completion_tokens, latency_seconds)
     """
     # 1. Extract and map user settings
@@ -701,7 +774,7 @@ async def _ask_llm_uncapped(
     # 2. Trim chat history to the recent-context token budget (text chat only).
     # Cheap and predictable: keeps the latest turns, drops older ones, and never
     # makes an extra LLM call - friendly to free-tier quotas.
-    if not image_base64 and not is_summarizing and history:
+    if not image_base64 and history:
         history = trim_history(history)
 
     # Models to try, ordered QUOTA-FIRST: the free tier's per-model daily quota
@@ -957,28 +1030,11 @@ async def _ask_llm_uncapped(
                         logger.warning(
                             f"Direct Gemini ({model}) returned status {response.status_code}: {response.text[:200]}"
                         )
-                        if response.status_code in (429, 403, 500, 503) or (
-                            response.status_code == 400 and "API key not valid" in response.text
-                        ):
-                            invalid_key = (
-                                response.status_code == 400
-                                and "API key not valid" in response.text
-                            )
-                            if invalid_key:
-                                # The key itself is bad for every model - back
-                                # off long and globally (model=None).
-                                cooldown, cooldown_model = 600, None
-                            elif response.status_code == 429 and "perday" in response.text.lower():
-                                # Daily quota exhausted on THIS model only -
-                                # retrying within the same day is pointless, so
-                                # back off long, but scoped to this model so the
-                                # key keeps serving other models normally.
-                                cooldown, cooldown_model = 21600, model
-                            elif response.status_code == 429:
-                                # Ordinary per-minute rate limit, clears fast.
-                                cooldown, cooldown_model = 60, model
-                            else:
-                                cooldown, cooldown_model = 300, model
+                        failure = _classify_key_failure(
+                            response.status_code, response.text, model
+                        )
+                        if failure:
+                            cooldown, cooldown_model = failure
                             logger.warning(
                                 f"Putting key {key[:8]} on {cooldown}s cooldown "
                                 f"(model={cooldown_model}) due to status {response.status_code}"

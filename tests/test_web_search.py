@@ -211,6 +211,59 @@ class TestAnswerWithWebTool(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(mock_post.call_count, 2)  # decide + answer
         mock_run.assert_awaited_once_with("курс доллара")
 
+    @patch("httpx.AsyncClient.post")
+    async def test_thinking_disabled_in_payload(self, mock_post):
+        # general is a fast mode: the tool path must send thinkingBudget=0 for
+        # models that support thinking control, just like ask_llm does —
+        # thinking left on was costing 5-11s per reply.
+        config.TAVILY_API_KEY = ""
+        mock_post.return_value = _gemini_text_response("быстрый ответ")
+        text, *_ = await llm.answer_with_web_tool(
+            [{"role": "user", "content": "привет"}]
+        )
+        self.assertEqual(text, "быстрый ответ")
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertEqual(
+            payload["generationConfig"]["thinkingConfig"], {"thinkingBudget": 0}
+        )
+
+    @patch("httpx.AsyncClient.post")
+    async def test_daily_quota_429_cools_key_per_model(self, mock_post):
+        # A quota-exhausted key must be put on a per-model cooldown so the NEXT
+        # message skips it, instead of re-hitting the dead key every time.
+        config.TAVILY_API_KEY = ""
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 429
+        resp.text = "Quota exceeded for metric generate_requests_per_model_per_day (perDay)"
+        mock_post.return_value = resp
+
+        text, *_ = await llm.answer_with_web_tool(
+            [{"role": "user", "content": "привет"}]
+        )
+        self.assertIsNone(text)
+        for model in llm._TOOL_MODELS:
+            self.assertIn(("dummy_key", model), llm.key_pool.cooldowns)
+        # Global (key-wide) scope must NOT be cooled — other models stay usable.
+        self.assertNotIn(("dummy_key", None), llm.key_pool.cooldowns)
+
+    @patch("httpx.AsyncClient.post")
+    async def test_safety_block_falls_through_to_next_model(self, mock_post):
+        config.TAVILY_API_KEY = ""
+        blocked = MagicMock(spec=httpx.Response)
+        blocked.status_code = 200
+        blocked.json.return_value = {
+            "candidates": [{"finishReason": "SAFETY"}],
+        }
+        mock_post.side_effect = [blocked, _gemini_text_response("чистый ответ")]
+
+        text, model, *_ = await llm.answer_with_web_tool(
+            [{"role": "user", "content": "вопрос"}]
+        )
+        self.assertEqual(text, "чистый ответ")
+        self.assertEqual(mock_post.call_count, 2)
+        # A safety block is not the key's fault — no cooldown.
+        self.assertEqual(llm.key_pool.cooldowns, {})
+
 
 class TestGenericAgentGeneral(unittest.IsolatedAsyncioTestCase):
     @patch("src.agents.generic_agent.answer_with_web_tool", new_callable=AsyncMock)
