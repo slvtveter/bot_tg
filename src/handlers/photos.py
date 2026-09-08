@@ -44,15 +44,17 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     # Defensive: guarantee the user row exists before any FK-constrained write.
-    await upsert_user(
-        user_id=user_id,
-        username=user.username,
-        first_name=user.first_name,
-        last_name=user.last_name,
+    # These operations are independent. Running them together hides one remote
+    # database round trip on Turso before the media download/LLM call.
+    _, ctx = await asyncio.gather(
+        upsert_user(
+            user_id=user_id,
+            username=user.username,
+            first_name=user.first_name,
+            last_name=user.last_name,
+        ),
+        get_user_context(user_id),
     )
-
-    # Single combined fetch (mode + settings + language) instead of three reads.
-    ctx = await get_user_context(user_id)
     mode = ctx["mode"]
     lang = ctx["language"]
 
