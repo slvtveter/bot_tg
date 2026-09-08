@@ -32,6 +32,18 @@ _TAVILY_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
 _MAX_RESULTS = 4
 _MAX_SNIPPET = 600  # chars per result, to bound prompt tokens
 
+# Reuse one connection pool across searches. Creating an AsyncClient for every
+# tool call forces a fresh DNS/TLS setup and adds noticeable latency on mobile
+# and remote deployments.
+_http_client: Optional[httpx.AsyncClient] = None
+
+
+def _get_http_client() -> httpx.AsyncClient:
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.AsyncClient(timeout=_TAVILY_TIMEOUT)
+    return _http_client
+
 
 @dataclass
 class SearchResult:
@@ -52,8 +64,7 @@ async def _tavily(query: str) -> List[Dict[str, str]]:
         "topic": "general",
     }
     try:
-        async with httpx.AsyncClient(timeout=_TAVILY_TIMEOUT) as client:
-            resp = await client.post(_TAVILY_URL, json=payload, headers=headers)
+        resp = await _get_http_client().post(_TAVILY_URL, json=payload, headers=headers)
         if resp.status_code != 200:
             logger.warning(f"Tavily returned {resp.status_code}: {resp.text[:200]}")
             return []
