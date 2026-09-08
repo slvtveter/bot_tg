@@ -250,7 +250,9 @@ async def get_db_connection(db_path: str = DB_PATH):
     redeploys), otherwise a local SQLite file via aiosqlite with a 10s busy
     timeout and foreign keys enforced.
     """
-    if config.USE_TURSO:
+    # Explicit alternate paths are used by tests/benchmarks and must remain
+    # local even when production config points at Turso.
+    if config.USE_TURSO and db_path == DB_PATH:
         # The shared client is deliberately NOT closed here — it lives for the
         # whole process (see _get_turso_client above).
         yield _TursoConnection(_get_turso_client())
@@ -364,7 +366,7 @@ async def init_db(db_path: str = DB_PATH) -> None:
     If the tables already exist without foreign keys, automatically performs a schema migration.
     On the Turso/libSQL backend the final schema is created directly instead.
     """
-    if config.USE_TURSO:
+    if config.USE_TURSO and db_path == DB_PATH:
         await _init_schema_turso()
         logger.info("Turso/libSQL database initialized (durable remote backend).")
         return
