@@ -258,6 +258,9 @@ async def get_db_connection(db_path: str = DB_PATH):
         yield _TursoConnection(_get_turso_client())
         return
 
+    parent = os.path.dirname(os.path.abspath(db_path))
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     conn = await aiosqlite.connect(db_path, timeout=10.0)
     try:
         await conn.execute("PRAGMA foreign_keys = ON;")
