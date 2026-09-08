@@ -198,6 +198,8 @@ class Router:
         self._ready = False
         self._global_mean: Optional[np.ndarray] = None
         self._domain_mats: Dict[str, np.ndarray] = {}
+        self._cache: Dict[str, RouteResult] = {}
+        self._cache_limit = 256
 
         if self._backend is None:
             try:
@@ -243,6 +245,10 @@ class Router:
         unexpected it routes to `general` so a reply is never blocked."""
         if not self.enabled or not text or not text.strip():
             return RouteResult(FALLBACK_DOMAIN, 0.0, "disabled")
+        cache_key = " ".join(text.split()).lower()
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
         try:
             await self._ensure_ready()
             if not self.enabled:
@@ -256,7 +262,11 @@ class Router:
                     best_d, best_s = d, s
             domain = best_d if best_s >= self.threshold else FALLBACK_DOMAIN
             logger.info("Router: %r -> %s (score=%.3f)", text[:60], domain, best_s)
-            return RouteResult(domain, best_s, self._backend.name)
+            result = RouteResult(domain, best_s, self._backend.name)
+            if len(self._cache) >= self._cache_limit:
+                self._cache.pop(next(iter(self._cache)))
+            self._cache[cache_key] = result
+            return result
         except Exception as e:
             logger.warning("Router error, falling back to general: %s", e)
             return RouteResult(FALLBACK_DOMAIN, 0.0, "error")

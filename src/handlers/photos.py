@@ -2,6 +2,7 @@ import asyncio
 import base64
 import html
 import logging
+import time
 
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -44,15 +45,17 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     # Defensive: guarantee the user row exists before any FK-constrained write.
-    await upsert_user(
-        user_id=user_id,
-        username=user.username,
-        first_name=user.first_name,
-        last_name=user.last_name,
+    # These operations are independent. Running them together hides one remote
+    # database round trip on Turso before the media download/LLM call.
+    _, ctx = await asyncio.gather(
+        upsert_user(
+            user_id=user_id,
+            username=user.username,
+            first_name=user.first_name,
+            last_name=user.last_name,
+        ),
+        get_user_context(user_id),
     )
-
-    # Single combined fetch (mode + settings + language) instead of three reads.
-    ctx = await get_user_context(user_id)
     mode = ctx["mode"]
     lang = ctx["language"]
 
@@ -62,9 +65,12 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
 
     try:
+        request_started = time.perf_counter()
         # Get the highest resolution photo
+        download_started = time.perf_counter()
         photo_file = await update.message.photo[-1].get_file()
         image_bytes = await photo_file.download_as_bytearray()
+        download_ms = (time.perf_counter() - download_started) * 1000
         image_base64 = base64.b64encode(image_bytes).decode("utf-8")
 
         # Prepare the vision prompt based on the user's active mode. The default
@@ -138,6 +144,11 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 vision_prompt=vision_prompt,
                 user_settings=settings,
             )
+        )
+        logger.info(
+            "photo_latency user=%s download_ms=%.0f llm_ms=%.0f total_before_send_ms=%.0f model=%s",
+            user_id, download_ms, latency * 1000,
+            (time.perf_counter() - request_started) * 1000, model_name or "unknown",
         )
 
         # Always strip/parse the marker: the model appends it only when it
