@@ -1,5 +1,7 @@
 import asyncio
+import logging
 import re
+import time
 
 from telegram import Bot, Update
 from telegram.ext import ContextTypes
@@ -16,6 +18,8 @@ from src.database import (
 from src.i18n import mode_title, resolve_button, t
 from src.orchestrator import Orchestrator
 from src.sender import send_response
+
+logger = logging.getLogger(__name__)
 
 # Initialize the orchestrator globally for now
 orchestrator = Orchestrator()
@@ -63,6 +67,7 @@ async def process_text_message(
     routes it through the Orchestrator for the user's current mode, logs the
     reply and usage stats, and sends the response back to Telegram.
     """
+    request_started = time.perf_counter()
     # 1. Fetch user context (mode + settings in ONE query) and recent history
     # concurrently — they're independent reads, and on the remote Turso backend
     # each one is an HTTP round trip, so running them in parallel halves that
@@ -101,6 +106,11 @@ async def process_text_message(
     )
 
     if response_text:
+        logger.info(
+            "text_latency user=%s llm_ms=%.0f total_before_send_ms=%.0f model=%s",
+            user_id, latency * 1000,
+            (time.perf_counter() - request_started) * 1000, model_name or "unknown",
+        )
         # 3. Send the reply to the user FIRST (rich message with fallbacks) —
         # the two bookkeeping writes below used to run before this, adding two
         # remote-DB round trips to the user's perceived response time.
